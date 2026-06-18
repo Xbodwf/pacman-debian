@@ -102,6 +102,10 @@ static void pkg_free(pkg_internal *p) {
 }
 
 /* ---- Handle ---- */
+static alpm_db_t *db_new(const char *name, int is_local);
+static int load_local_db(alpm_db_t *db);
+static int load_sync_db(alpm_db_t *db);
+
 struct __alpm_handle_t {
 	char *dbpath;
 	char *logfile;
@@ -111,11 +115,12 @@ struct __alpm_handle_t {
 };
 
 alpm_handle_t *alpm_initialize(const char *root, const char *dbpath, alpm_errno_t *err) {
-	(void)root; // ignored; we use fixed paths
+	(void)root;
 	alpm_handle_t *h = calloc(1, sizeof(alpm_handle_t));
 	if (!h) { if (err) *err = ALPM_ERR_MEMORY; return NULL; }
 	h->dbpath = strdup(dbpath && *dbpath ? dbpath : DB_DIR);
-	h->localdb = NULL;
+	h->localdb = db_new("local", 1);
+	load_local_db(h->localdb);
 	h->syncdbs = NULL;
 	h->err = ALPM_ERR_OK;
 	if (err) *err = ALPM_ERR_OK;
@@ -311,12 +316,16 @@ void alpm_pkg_free(alpm_pkg_t *pkg) { pkg_free((pkg_internal *)pkg); }
 
 /* ---- Options ---- */
 int alpm_option_add_cachedir(alpm_handle_t *handle, const char *cachedir) { (void)handle; (void)cachedir; return 0; }
-void alpm_option_set_dbpath(alpm_handle_t *handle, const char *dbpath) {
-	if (handle) { free(handle->dbpath); handle->dbpath = strdup(dbpath ? dbpath : DB_DIR); }
-}
-void alpm_option_set_logfile(alpm_handle_t *handle, const char *logfile) {
+int alpm_option_set_logfile(alpm_handle_t *handle, const char *logfile) {
 	if (handle) { free(handle->logfile); handle->logfile = strdup(logfile ? logfile : ""); }
+	return 0;
 }
+int alpm_option_set_cachedirs(alpm_handle_t *handle, alpm_list_t *cachedirs) { (void)handle; (void)cachedirs; return 0; }
+int alpm_option_set_dbpath(alpm_handle_t *handle, const char *dbpath) {
+	if (handle) { free(handle->dbpath); handle->dbpath = strdup(dbpath ? dbpath : DB_DIR); }
+	return 0;
+}
+int alpm_option_set_gpgdir(alpm_handle_t *handle, const char *gpgdir) { (void)handle; (void)gpgdir; return 0; }
 const char *alpm_option_get_dbpath(alpm_handle_t *handle) { return handle ? handle->dbpath : DB_DIR; }
 alpm_db_t *alpm_option_get_localdb(alpm_handle_t *handle) { return handle ? handle->localdb : NULL; }
 alpm_list_t *alpm_option_get_syncdbs(alpm_handle_t *handle) { return handle ? handle->syncdbs : NULL; }
@@ -342,3 +351,36 @@ int alpm_pkg_vercmp(const char *a, const char *b) {
 /* ---- Misc ---- */
 const char *alpm_version(void) { return "7.1.0"; }
 int alpm_capabilities(void) { return ALPM_CAPABILITY_NLS; }
+
+/* ---- Go/CGO aliases used by AUR helpers ---- */
+alpm_db_t *alpm_register_syncdb(alpm_handle_t *handle, const char *treename, int level) {
+	(void)level;
+	if (!handle || !treename) return NULL;
+	alpm_db_t *db = db_new(treename, 0);
+	if (!db) return NULL;
+	load_sync_db(db);
+	handle->syncdbs = alpm_list_add(handle->syncdbs, db);
+	return db;
+}
+alpm_db_t *alpm_get_localdb(alpm_handle_t *handle) { return alpm_option_get_localdb(handle); }
+alpm_list_t *alpm_get_syncdbs(alpm_handle_t *handle) { return alpm_option_get_syncdbs(handle); }
+int alpm_db_unregister(alpm_db_t *db) { (void)db; return 0; }
+const char *alpm_option_get_gpgdir(alpm_handle_t *handle) { (void)handle; return NULL; }
+const char *alpm_option_get_logfile(alpm_handle_t *handle) { (void)handle; return NULL; }
+int alpm_option_set_local_file_siglevel(alpm_handle_t *handle, int level) { (void)handle; (void)level; return 0; }
+int alpm_option_get_local_file_siglevel(alpm_handle_t *handle) { (void)handle; return 0; }
+int alpm_option_set_remote_file_siglevel(alpm_handle_t *handle, int level) { (void)handle; (void)level; return 0; }
+int alpm_option_get_remote_file_siglevel(alpm_handle_t *handle) { (void)handle; return 0; }
+int alpm_option_set_dbext(alpm_handle_t *handle, const char *ext) { (void)handle; (void)ext; return 0; }
+const char *alpm_option_get_dbext(alpm_handle_t *handle) { (void)handle; return NULL; }
+int alpm_option_set_disable_dl_timeout(alpm_handle_t *handle, int disable) { (void)handle; (void)disable; return 0; }
+int alpm_option_get_disable_dl_timeout(alpm_handle_t *handle) { (void)handle; return 0; }
+int alpm_option_set_disable_sandbox(alpm_handle_t *handle, int disable) { (void)handle; (void)disable; return 0; }
+int alpm_option_get_disable_sandbox(alpm_handle_t *handle) { (void)handle; return 0; }
+int alpm_trans_init(alpm_handle_t *handle, int flags) { (void)handle; (void)flags; return 0; }
+int alpm_trans_prepare(alpm_handle_t *handle) { (void)handle; return 0; }
+int alpm_trans_commit(alpm_handle_t *handle) { (void)handle; return 0; }
+int alpm_trans_release(alpm_handle_t *handle) { (void)handle; return 0; }
+int alpm_add_pkg(alpm_handle_t *handle, alpm_pkg_t *pkg) { (void)handle; (void)pkg; return 0; }
+int alpm_remove_pkg(alpm_handle_t *handle, alpm_pkg_t *pkg) { (void)handle; (void)pkg; return 0; }
+int alpm_sync_sysupgrade(alpm_handle_t *handle, int enable_downgrade) { (void)handle; (void)enable_downgrade; return 0; }

@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
+#include <stdarg.h>
 #include <sys/types.h>
 
 #ifdef __cplusplus
@@ -114,8 +116,10 @@ void alpm_pkg_free(alpm_pkg_t *pkg);
 
 /* ---- Options ---- */
 int alpm_option_add_cachedir(alpm_handle_t *handle, const char *cachedir);
-void alpm_option_set_dbpath(alpm_handle_t *handle, const char *dbpath);
-void alpm_option_set_logfile(alpm_handle_t *handle, const char *logfile);
+int alpm_option_set_cachedirs(alpm_handle_t *handle, alpm_list_t *cachedirs);
+int alpm_option_set_usesyslog(alpm_handle_t *handle, int use);
+int alpm_option_set_dbpath(alpm_handle_t *handle, const char *dbpath);
+int alpm_option_set_logfile(alpm_handle_t *handle, const char *logfile);
 const char *alpm_option_get_dbpath(alpm_handle_t *handle);
 alpm_db_t *alpm_option_get_localdb(alpm_handle_t *handle);
 alpm_list_t *alpm_option_get_syncdbs(alpm_handle_t *handle);
@@ -129,6 +133,31 @@ int alpm_pkg_vercmp(const char *a, const char *b);
 /* ---- Misc ---- */
 const char *alpm_version(void);
 int alpm_capabilities(void);
+
+/* Go/CGO binding aliases used by AUR helpers */
+alpm_db_t *alpm_get_localdb(alpm_handle_t *handle);
+alpm_list_t *alpm_get_syncdbs(alpm_handle_t *handle);
+int alpm_db_unregister(alpm_db_t *db);
+int alpm_option_set_gpgdir(alpm_handle_t *handle, const char *gpgdir);
+const char *alpm_option_get_gpgdir(alpm_handle_t *handle);
+const char *alpm_option_get_logfile(alpm_handle_t *handle);
+int alpm_option_set_local_file_siglevel(alpm_handle_t *handle, int level);
+int alpm_option_get_local_file_siglevel(alpm_handle_t *handle);
+int alpm_option_set_remote_file_siglevel(alpm_handle_t *handle, int level);
+int alpm_option_get_remote_file_siglevel(alpm_handle_t *handle);
+int alpm_option_set_dbext(alpm_handle_t *handle, const char *ext);
+const char *alpm_option_get_dbext(alpm_handle_t *handle);
+int alpm_option_set_disable_dl_timeout(alpm_handle_t *handle, int disable);
+int alpm_option_get_disable_dl_timeout(alpm_handle_t *handle);
+int alpm_option_set_disable_sandbox(alpm_handle_t *handle, int disable);
+int alpm_option_get_disable_sandbox(alpm_handle_t *handle);
+int alpm_trans_init(alpm_handle_t *handle, int flags);
+int alpm_trans_prepare(alpm_handle_t *handle);
+int alpm_trans_commit(alpm_handle_t *handle);
+int alpm_trans_release(alpm_handle_t *handle);
+int alpm_add_pkg(alpm_handle_t *handle, alpm_pkg_t *pkg);
+int alpm_remove_pkg(alpm_handle_t *handle, alpm_pkg_t *pkg);
+int alpm_sync_sysupgrade(alpm_handle_t *handle, int enable_downgrade);
 
 #ifdef __cplusplus
 }

@@ -1,65 +1,64 @@
 import * as fs from 'node:fs';
 import { execSync } from 'node:child_process';
-import { readDpkgStatus } from '../db/dpkg-compat';
-import { searchRepo } from '../repo/repository';
+import * as sqlite from '../db/sqlite';
 import { loadDatabase } from '../db/database';
+import { searchRepo } from '../repo/repository';
 
 function managed(name: string): boolean {
-  return loadDatabase().packages.has(name);
+  return !!sqlite.getPackage(name);
 }
 
 export function listInstalled(filter?: string): void {
-  const dpkg = readDpkgStatus();
-  let pkgs = [...dpkg.values()];
+  const pkgs = sqlite.getAllDpkgPackages();
+  let filtered = pkgs;
   if (filter) {
     const lq = filter.toLowerCase();
-    pkgs = pkgs.filter(p => p.package.toLowerCase().includes(lq) || (p.description && p.description.toLowerCase().includes(lq)));
+    filtered = pkgs.filter(p =>
+      p.name.toLowerCase().includes(lq) ||
+      (p.description && p.description.toLowerCase().includes(lq))
+    );
   }
-  if (pkgs.length === 0) { console.log('no packages installed'); return; }
-  pkgs.sort((a, b) => a.package.localeCompare(b.package));
-  for (const p of pkgs) console.log(`${p.package} ${p.version}`);
+  if (filtered.length === 0) { console.log('no packages installed'); return; }
+  filtered.sort((a, b) => a.name.localeCompare(b.name));
+  for (const p of filtered) console.log(`${p.name} ${p.version}`);
 }
 
 export function listExplicit(): void {
-  const db = loadDatabase();
-  for (const [name, p] of db.packages) {
-    if (p.reason === 'explicit') console.log(`${name} ${p.version}`);
+  for (const p of sqlite.loadAllPackages()) {
+    if (p.reason === 'explicit') console.log(`${p.name} ${p.version}`);
   }
 }
 
 export function listDeps(): void {
-  const db = loadDatabase();
-  for (const [name, p] of db.packages) {
-    if (p.reason === 'dependency') console.log(`${name} ${p.version}`);
+  for (const p of sqlite.loadAllPackages()) {
+    if (p.reason === 'dependency') console.log(`${p.name} ${p.version}`);
   }
 }
 
 export function listOrphans(): void {
-  const db = loadDatabase();
   const needed = new Set<string>();
-  for (const [, p] of db.packages) {
+  for (const p of sqlite.loadAllPackages()) {
     const deps = (p.depends || '').split(',').map(s => s.trim().split(/\s/)[0]).filter(Boolean);
     for (const d of deps) needed.add(d);
   }
-  for (const [name, p] of db.packages) {
-    if (p.reason === 'dependency' && !needed.has(name)) console.log(`${name} ${p.version}`);
+  for (const p of sqlite.loadAllPackages()) {
+    if (p.reason === 'dependency' && !needed.has(p.name)) console.log(`${p.name} ${p.version}`);
   }
 }
 
 export function checkIntegrity(name?: string): void {
-  const db = loadDatabase();
   if (name) {
-    const p = db.packages.get(name);
+    const p = sqlite.getPackage(name);
     if (!p) { console.error(`error: '${name}' is not installed`); return; }
     let missing = 0;
     for (const f of p.files) { if (!fs.existsSync(f)) missing++; }
     console.log(missing === 0 ? `${name}: ${p.files.length} files, 0 missing` : `${name}: WARNING: ${missing} files missing`);
     return;
   }
-  for (const [n, p] of db.packages) {
+  for (const p of sqlite.loadAllPackages()) {
     let missing = 0;
     for (const f of p.files) { if (!fs.existsSync(f)) missing++; }
-    if (missing > 0) console.log(`${n}: WARNING: ${missing} files missing`);
+    if (missing > 0) console.log(`${p.name}: WARNING: ${missing} files missing`);
   }
 }
 
@@ -77,14 +76,13 @@ export function showInfo(name: string, fromRepo: boolean): void {
     return;
   }
 
-  const dpkg = readDpkgStatus();
-  const p = dpkg.get(name);
+  const p = sqlite.getDpkgPackage(name);
   if (!p) { console.error(`error: '${name}' was not found`); return; }
 
   const m = managed(name);
-  const our = m ? loadDatabase().packages.get(name) : undefined;
+  const our = m ? sqlite.getPackage(name) : undefined;
 
-  console.log(`Name           : ${p.package}`);
+  console.log(`Name           : ${p.name}`);
   console.log(`Version        : ${p.version}`);
   console.log(`Description    : ${p.description || ''}`);
   console.log(`Architecture   : ${p.architecture}`);
@@ -92,7 +90,7 @@ export function showInfo(name: string, fromRepo: boolean): void {
   if (m && our) console.log(`Install Reason : ${our.reason === 'explicit' ? 'Explicitly installed' : 'Installed as a dependency'} (pacman-debian)`);
   if (!m) console.log(`Install Reason : Installed via dpkg`);
   if (p.depends) console.log(`Depends On     : ${p.depends}`);
-  if (p.installedSize) console.log(`Installed Size : ${(p.installedSize / 1024).toFixed(2)} KiB`);
+  if (p.installed_size) console.log(`Installed Size : ${(p.installed_size / 1024).toFixed(2)} KiB`);
   if (p.maintainer) console.log(`Packager       : ${p.maintainer}`);
 
   if (our) {
@@ -102,8 +100,7 @@ export function showInfo(name: string, fromRepo: boolean): void {
 }
 
 export function queryFile(fp: string): void {
-  const db = loadDatabase();
-  const owner = db.fileIndex.get(fp);
+  const owner = sqlite.getFileOwner(fp);
   if (owner) { console.log(`${fp} is owned by ${owner}`); return; }
   try {
     const out = execSync(`dpkg -S ${fp} 2>/dev/null`, { encoding: 'utf8' });

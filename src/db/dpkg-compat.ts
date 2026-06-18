@@ -1,12 +1,9 @@
 import * as fs from 'node:fs';
-import { execSync } from 'node:child_process';
-import { parseControlFile } from '../core/control';
+import { refreshDpkgCache, getAllDpkgPackages, getDpkgPackage, dpkgHasPackage as sqlDpkgHas, upsertDpkgEntry, removeDpkgCacheEntry, syncDpkgCache } from './sqlite';
 import type { InstalledPackage } from '../core/types';
 
 const DPKG_STATUS = '/var/lib/dpkg/status';
 const DPKG_INFO = '/var/lib/dpkg/info';
-
-let _dpkgCache: { mtime: number; data: Map<string, DpkgEntry> } | null = null;
 
 export interface DpkgEntry {
   package: string;
@@ -23,42 +20,22 @@ export interface DpkgEntry {
 }
 
 export function readDpkgStatus(): Map<string, DpkgEntry> {
-  if (!fs.existsSync(DPKG_STATUS)) return new Map();
-
-  // Cache: skip re-parse if mtime unchanged
-  try {
-    const st = fs.statSync(DPKG_STATUS);
-    if (_dpkgCache && _dpkgCache.mtime === st.mtimeMs) return _dpkgCache.data;
-  } catch {}
-
-  const content = fs.readFileSync(DPKG_STATUS, 'utf8');
+  refreshDpkgCache();
   const result = new Map<string, DpkgEntry>();
-  for (const entry of content.split('\n\n').filter(Boolean)) {
-    const fields = parseControlFile(entry);
-    const name = fields['package'];
-    if (!name) continue;
-    const status = (fields['status'] || '').trim();
-    if (!status.startsWith('install ok installed')) continue;
-    result.set(name, {
-      package: name, version: fields['version'] || '',
-      architecture: fields['architecture'] || '', status,
-      description: fields['description']?.split('\n')[0],
-      maintainer: fields['maintainer'], depends: fields['depends'],
-      installedSize: fields['installed-size'] ? parseInt(fields['installed-size'], 10) : undefined,
-      section: fields['section'], priority: fields['priority'], homepage: fields['homepage'],
+  for (const row of getAllDpkgPackages()) {
+    result.set(row.name, {
+      package: row.name, version: row.version, architecture: row.architecture,
+      status: 'install ok installed', description: row.description,
+      maintainer: row.maintainer, depends: row.depends,
+      installedSize: row.installed_size, section: row.section,
+      priority: row.priority, homepage: row.homepage,
     });
   }
-  _dpkgCache = { mtime: fs.statSync(DPKG_STATUS).mtimeMs, data: result };
   return result;
 }
 
-function formatDescription(desc?: string): string | undefined {
-  if (!desc || desc.trim() === '') return undefined;
-  const lines = desc.split('\n');
-  if (lines.length <= 1) return `Description: ${desc}`;
-  const first = lines[0];
-  const rest = lines.slice(1).map(l => ' ' + l).join('\n');
-  return `Description: ${first}\n${rest}`;
+export function dpkgHasPackage(name: string): boolean {
+  return sqlDpkgHas(name);
 }
 
 const ARCH_MAP: Record<string, string> = {
@@ -70,13 +47,21 @@ function toDpkgArch(arch: string): string {
   return ARCH_MAP[arch] || arch;
 }
 
+function formatDescription(desc?: string): string | undefined {
+  if (!desc || desc.trim() === '') return undefined;
+  const lines = desc.split('\n');
+  if (lines.length <= 1) return `Description: ${desc}`;
+  const first = lines[0];
+  const rest = lines.slice(1).map(l => ' ' + l).join('\n');
+  return `Description: ${first}\n${rest}`;
+}
+
 export function writeDpkgEntry(pkg: InstalledPackage): void {
   if (!fs.existsSync(DPKG_STATUS)) return;
 
   const content = fs.readFileSync(DPKG_STATUS, 'utf8');
-
-  const entries = content.split('\n\n').filter(e => e.trim() !== '');
-  let kept = entries.filter(e => {
+  const entries = content.split('\n\n').filter((e: string) => e.trim() !== '');
+  let kept = entries.filter((e: string) => {
     const m = e.match(/^Package: (.+)$/m);
     return !(m && m[1] === pkg.name);
   });
@@ -97,12 +82,10 @@ export function writeDpkgEntry(pkg: InstalledPackage): void {
   if (desc) entry.push(desc);
   if (pkg.homepage) entry.push(`Homepage: ${pkg.homepage}`);
 
-  kept = kept.filter(e => e.trim() !== '');
+  kept = kept.filter((e: string) => e.trim() !== '');
   kept.push(entry.join('\n'));
   fs.writeFileSync(DPKG_STATUS, kept.join('\n\n') + '\n');
 
-
-  // Write .list file for dpkg compatibility
   if (fs.existsSync(DPKG_INFO)) {
     const lp = `${DPKG_INFO}/${pkg.name}.list`;
     const existing = fs.existsSync(lp)
@@ -110,29 +93,23 @@ export function writeDpkgEntry(pkg: InstalledPackage): void {
       : [];
     fs.writeFileSync(lp, [...new Set([...existing, ...pkg.files])].sort().join('\n') + '\n');
   }
+  upsertDpkgEntry(pkg.name, pkg.version, toDpkgArch(pkg.architecture), pkg.description || '', pkg.installedSize || 0);
+  syncDpkgCache();
 }
 
 export function removeDpkgEntry(name: string): void {
   if (!fs.existsSync(DPKG_STATUS)) return;
   const content = fs.readFileSync(DPKG_STATUS, 'utf8');
-  const entries = content.split('\n\n').filter(e => e.trim() !== '');
-  const kept = entries.filter(e => {
+  const entries = content.split('\n\n').filter((e: string) => e.trim() !== '');
+  const kept = entries.filter((e: string) => {
     const m = e.match(/^Package: (.+)$/m);
     if (m && m[1] === name) return false;
     return true;
   });
   fs.writeFileSync(DPKG_STATUS, kept.join('\n\n') + '\n');
+  removeDpkgCacheEntry(name);
+  syncDpkgCache();
 
   const lp = `${DPKG_INFO}/${name}.list`;
   if (fs.existsSync(lp)) fs.unlinkSync(lp);
-}
-
-// Check if a package is installed according to dpkg
-export function dpkgHasPackage(name: string): boolean {
-  try {
-    execSync(`dpkg -s "${name}" 2>/dev/null`, { stdio: 'pipe' });
-    return true;
-  } catch {
-    return false;
-  }
 }

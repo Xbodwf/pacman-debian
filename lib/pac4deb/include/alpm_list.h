@@ -8,9 +8,9 @@ extern "C" {
 #endif
 
 typedef struct __alpm_list_t {
+	void *data;
 	struct __alpm_list_t *prev;
 	struct __alpm_list_t *next;
-	void *data;
 } alpm_list_t;
 
 typedef int (*alpm_list_fn_cmp)(const void *, const void *);

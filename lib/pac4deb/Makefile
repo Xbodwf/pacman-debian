@@ -1,6 +1,6 @@
 CC ?= gcc
 CFLAGS ?= -O2 -fPIC
-CFLAGS += -Wall -Wextra -Iinclude
+CFLAGS += -Iinclude -Wno-unused-parameter
 LDFLAGS += -shared -ldl
 
 SRC = $(wildcard src/*.c)

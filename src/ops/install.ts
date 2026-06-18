@@ -9,6 +9,7 @@ import {
   initDb, loadDatabase, saveDatabase, addPackage, isInstalled, getPackage,
   saveScript, runScript, createTransaction, completeTransaction, parseDepends,
 } from '../db/database';
+import { saveFileIndex } from '../db/sqlite';
 import { writeDpkgEntry, dpkgHasPackage } from '../db/dpkg-compat';
 import { formatBytes } from '../ui/format';
 import { humanSize, drawProgressBar, formatRate, formatETA } from '../ui/progress';
@@ -60,6 +61,7 @@ async function installDeb(filePath: string, reason: 'explicit' | 'dependency', o
   };
 
   addPackage(db, ip);
+  saveFileIndex(ip);
   try { writeDpkgEntry(ip); } catch (e) { console.error('  WARNING: failed to write dpkg status:', e); }
   saveDatabase(db);
   completeTransaction(tx.id);
@@ -113,6 +115,7 @@ async function installArch(filePath: string, reason: 'explicit' | 'dependency', 
   };
 
   addPackage(db, ip);
+  saveFileIndex(ip);
   try { writeDpkgEntry(ip); } catch (e) { console.error('  WARNING: failed to write dpkg status:', e); }
   saveDatabase(db);
   return true;
