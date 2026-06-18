@@ -10,6 +10,7 @@ import {
   saveScript, runScript, createTransaction, completeTransaction, parseDepends,
 } from '../db/database';
 import { writeDpkgEntry, dpkgHasPackage } from '../db/dpkg-compat';
+import { resolveDeps, detectConflicts } from '../core/deps';
 import { formatBytes } from '../ui/format';
 import { humanSize, drawProgressBar, formatRate, formatETA } from '../ui/progress';
 import { confirm } from '../ui/prompt';
@@ -126,30 +127,6 @@ export async function installPkgFile(filePath: string, reason: 'explicit' | 'dep
   return installDeb(filePath, reason, opts);
 }
 
-function resolveDepsRecursive(pkgName: string, seen: Set<string>): RepoPkg[] {
-  if (seen.has(pkgName)) return [];
-  seen.add(pkgName);
-  if (dpkgHasPackage(pkgName)) return [];
-
-  const db = loadDatabase();
-  if (isInstalled(db, pkgName)) return [];
-
-  const rp = findInRepo(pkgName);
-  if (!rp) return [];
-
-  const result: RepoPkg[] = [];
-  const deps = parseDepends(rp.depends);
-  for (const dep of deps) {
-    result.push(...resolveDepsRecursive(dep.name, seen));
-    const depRp = findInRepo(dep.name);
-    if (depRp && !seen.has(depRp.package)) {
-      seen.add(depRp.package);
-      result.push(depRp);
-    }
-  }
-  return result;
-}
-
 export async function installPkg(target: string, opts: InstallOptions = {}): Promise<boolean> {
   if (fs.existsSync(target) && ['.deb', '.pkg.tar.zst', '.pkg.tar.xz', '.pkg.tar.gz'].some(e => target.endsWith(e))) {
     const cols = process.stdout.columns || 80;
@@ -171,12 +148,11 @@ export async function installPkg(target: string, opts: InstallOptions = {}): Pro
 export async function installPackages(targets: string[], opts: InstallOptions = {}): Promise<number> {
   initDb();
 
-  // Validate all targets exist (uses fast findInRepo, not full cache)
-  const resolved: RepoPkg[] = [];
+  // Validate targets exist
+  const targetPkgs: RepoPkg[] = [];
   for (const t of targets) {
     const rp = findInRepo(t);
     if (!rp) {
-      // Check if cache dir exists at all
       const cacheDir = '/var/cache/pacman-debian/packages';
       if (!fs.existsSync(cacheDir) || fs.readdirSync(cacheDir).length === 0) {
         console.error('error: database not synced (run pacman -Sy)');
@@ -185,35 +161,49 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
       console.error(`error: '${t}' not found`);
       continue;
     }
-    if (opts.needed) {
-      if (dpkgHasPackage(t) || isInstalled(loadDatabase(), t)) {
-        console.log(`  ${t} is up to date`);
-        continue;
-      }
+    if (opts.needed && dpkgHasPackage(t)) {
+      console.log(`  ${t} is up to date`);
+      continue;
     }
-    resolved.push(rp);
+    targetPkgs.push(rp);
   }
-  if (resolved.length === 0) return 0;
+  if (targetPkgs.length === 0) return 0;
 
+  // Resolve dependencies
   console.log('resolving dependencies...');
-  const seen = new Set<string>();
-  const allDeps: RepoPkg[] = [];
-  for (const rp of resolved) {
-    allDeps.push(...resolveDepsRecursive(rp.package, seen));
-  }
-  // Dedupe: resolved targets first, then deps, removing duplicates
-  const allNames = new Set<string>();
+  const { install: depResults, errors: depErrors } = resolveDeps(targets);
+  for (const err of depErrors) console.error(`  warning: ${err}`);
+  if (depErrors.length > 0 && depResults.length === 0) return 0;
+
+  // Dedupe: targets first, then deps
   const allPkgs: RepoPkg[] = [];
-  for (const rp of [...resolved, ...allDeps]) {
-    if (allNames.has(rp.package)) continue;
-    allNames.add(rp.package);
+  const seen = new Set<string>();
+  for (const rp of targetPkgs) {
+    if (seen.has(rp.package)) continue;
+    seen.add(rp.package);
     allPkgs.push(rp);
+  }
+  for (const dr of depResults) {
+    if (seen.has(dr.pkg.package)) continue;
+    seen.add(dr.pkg.package);
+    allPkgs.push(dr.pkg);
+  }
+
+  // Conflict detection
+  console.log('looking for conflicting packages...\n');
+  const conflicts = detectConflicts(allPkgs);
+  for (const c of conflicts) {
+    console.error(`  ${c.reason}`);
+  }
+  if (conflicts.length > 0) {
+    console.error('');
+    console.error('error: unresolvable package conflicts detected');
+    return 0;
   }
 
   const totalSize = allPkgs.reduce((s, p) => s + (p.size || 0), 0);
   const totalInst = allPkgs.reduce((s, p) => s + ((p.installedSize || 0) * 1024), 0);
 
-  console.log('looking for conflicting packages...\n');
   console.log(`Packages (${allPkgs.length}): ${allPkgs.map(p => p.package).join('  ')}\n`);
   console.log(`Total Download Size:   ${formatBytes(totalSize).padStart(9)}`);
   console.log(`Total Installed Size:  ${formatBytes(totalInst).padStart(9)}`);
@@ -230,14 +220,12 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
 
   for (let i = 0; i < allPkgs.length; i++) {
     const p = allPkgs[i];
-    const isExplicit = resolved.some(r => r.package === p.package);
-    const prefix = `(${i + 1}/${allPkgs.length}) `;
+    const isExplicit = targetPkgs.some(r => r.package === p.package);
     const nameMax = Math.max(20, cols - 60);
 
-    // Download with progress bar
     let prevTime = Date.now(), prevBytes = 0, smoothRate = 0;
     const pname = p.package.length > nameMax ? p.package.slice(0, nameMax - 3) + '...' : p.package;
-    process.stdout.write(`${prefix}downloading ${pname}`);
+    process.stdout.write(`${formatPfx(i + 1, allPkgs.length)}downloading ${pname}`);
 
     const localPath = await downloadPkg(p, undefined, (rec, tot) => {
       const now = Date.now();
@@ -252,20 +240,20 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
       const etaS = formatETA(eta);
       const pct = tot > 0 ? Math.round(rec / tot * 100) : 0;
       const bar = drawProgressBar(pct, cols);
-      process.stdout.write(`\r${prefix}${pname.padEnd(nameMax)}${dl.val.padStart(6)} ${dl.unit}  ${rateS} ${etaS} [${bar}] ${String(pct).padStart(3)}%`);
+      process.stdout.write(`\r${formatPfx(i + 1, allPkgs.length)}${pname.padEnd(nameMax)}${dl.val.padStart(6)} ${dl.unit}  ${rateS} ${etaS} [${bar}] ${String(pct).padStart(3)}%`);
     });
 
-    // Integrity check (just show completed bar)
     const barDone = drawProgressBar(100, cols);
-    process.stdout.write(`\r${prefix}checking package integrity            ${barDone} 100%\n`);
-
-    // Loading (just show completed bar)
-    process.stdout.write(`${prefix}loading package files                 ${barDone} 100%\n`);
-
-    // Installing
-    process.stdout.write(`${prefix}installing ${pname.padEnd(nameMax)}${barDone} 100%\n`);
+    process.stdout.write(`\r${formatPfx(i + 1, allPkgs.length)}checking package integrity            ${barDone} 100%\n`);
+    process.stdout.write(`${formatPfx(i + 1, allPkgs.length)}loading package files                 ${barDone} 100%\n`);
+    process.stdout.write(`${formatPfx(i + 1, allPkgs.length)}installing ${pname.padEnd(nameMax)}${barDone} 100%\n`);
     await installPkgFile(localPath, isExplicit ? (opts.asdeps ? 'dependency' : 'explicit') : 'dependency', opts);
   }
 
   return allPkgs.length;
 }
+
+function formatPfx(i: number, n: number): string {
+  return `(${i}/${n}) `;
+}
+
