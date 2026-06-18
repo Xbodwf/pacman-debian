@@ -116,6 +116,14 @@ export async function buildPkgbuild(options: BuildOptions): Promise<string> {
   const fullVersion = [info.pkgver, info.pkgrel].filter(Boolean).join('-');
   console.log(`  -> package: ${info.pkgname}-${fullVersion}`);
 
+  // Determine effective architecture (match system from PKGBUILD's arch list)
+  const archMap: Record<string, string> = { arm64: 'aarch64', arm: 'armv7h', x86: 'i686', x64: 'x86_64' };
+  const systemArch = archMap[process.arch] || process.arch;
+  const effectiveArch = info.arch.find(a => a === systemArch || a === 'any') || info.arch[0] || 'any';
+  if (effectiveArch !== systemArch && !info.arch.includes('any')) {
+    console.log(`  warning: system arch ${systemArch} not in PKGBUILD arch list, using ${effectiveArch}`);
+  }
+
   const srcdir = path.join(workDir, 'src', `${info.pkgname}-${info.pkgver}`);
   const pkgdir = path.join(workDir, 'pkg', `${info.pkgname}-${info.pkgver}`);
   const outDir = workDir;
@@ -277,7 +285,7 @@ export async function buildPkgbuild(options: BuildOptions): Promise<string> {
 
   // --- Create .pkg.tar.zst ---
   if (!options.skipPackage) {
-    const outFile = path.join(outDir, pkgFilename(info));
+    const outFile = path.join(outDir, pkgFilename(info, effectiveArch));
 
     if (!options.force && fs.existsSync(outFile)) {
       throw new Error(`${path.basename(outFile)} already exists (use -f to overwrite)`);
@@ -296,7 +304,7 @@ export async function buildPkgbuild(options: BuildOptions): Promise<string> {
       `builddate = ${Math.floor(Date.now() / 1000)}`,
       `packager = pacman-debian`,
       `size = ${getDirSize(pkgdir)}`,
-      `arch = ${info.arch[0] || 'any'}`,
+      `arch = ${effectiveArch}`,
       ...info.license.map(l => `license = ${l}`),
       ...info.depends.map(d => `depend = ${d}`),
       ...info.provides.map(p => `provides = ${p}`),
@@ -318,9 +326,13 @@ export async function buildPkgbuild(options: BuildOptions): Promise<string> {
 
     // Install
     if (options.install) {
-      console.log('  :: Installing package...');
-      const { installPkgFile } = await import('../ops/install');
-      await installPkgFile(outFile, 'explicit');
+      if (process.getuid && process.getuid() !== 0) {
+        console.log(`  ==> Install with: sudo pacman -U ${path.basename(outFile)}`);
+      } else {
+        console.log('  :: Installing package...');
+        const { installPkgFile } = await import('../ops/install');
+        await installPkgFile(outFile, 'explicit');
+      }
     }
 
     // Remove build deps

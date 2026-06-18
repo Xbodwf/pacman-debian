@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { execSync } from 'node:child_process';
 import { buildPkgbuild } from './build';
 
 function help(): void {
@@ -67,21 +66,16 @@ async function main(): Promise<void> {
     return;
   }
 
-  const needsRoot = (options.install || options.syncdeps) && !options.skipPackage;
-  if (needsRoot && (process.getuid && process.getuid() !== 0)) {
-    // Use sudo for the install part
-    if (options.install || options.syncdeps) {
-      // Re-run self with sudo for install, but build as user first
-      const skipInstall = { ...options, install: false, syncdeps: false };
-      await buildPkgbuild(skipInstall);
-      // Now re-run with sudo for install
-      const self = process.argv[1];
-      const sudoArgs = process.argv.slice(2).filter(a => a !== '-i' && a !== '--install' && a !== '-s' && a !== '--syncdeps');
-      if (options.install) sudoArgs.push('-i');
-      if (options.syncdeps) sudoArgs.push('-s');
-      execSync(`sudo "${self}" ${sudoArgs.join(' ')}`, { stdio: 'inherit' });
-      return;
-    }
+  if ((options.install || options.syncdeps) && !options.skipPackage &&
+      process.getuid && process.getuid() !== 0) {
+    // Build as user, then print install instructions
+    console.log(':: Building package...');
+    await buildPkgbuild({ ...options, install: false, syncdeps: false });
+    console.log('');
+    console.log('  To install the package, run:');
+    console.log(`    sudo pacman -U *.pkg.tar.zst`);
+    console.log('');
+    return;
   }
 
   await buildPkgbuild(options);
