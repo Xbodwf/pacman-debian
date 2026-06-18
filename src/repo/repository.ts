@@ -4,7 +4,6 @@ import * as https from 'node:https';
 import * as http from 'node:http';
 import * as zlib from 'node:zlib';
 import * as readline from 'node:readline';
-import { execSync } from 'node:child_process';
 import { loadConfig } from './config';
 import { parseControlFile } from '../core/control';
 import { decompress } from '../core/compress';
@@ -343,18 +342,21 @@ export function searchRepo(query: string): RepoPkg[] {
 }
 
 export function findInRepo(pkgName: string): RepoPkg | undefined {
-  // Fast path: grep JSONL chunks (native C binary, stops at first match)
+  // Fast path: scan JSONL chunks with native Node (no external command)
+  const pattern = `"package":"${pkgName}"`;
   const cfg = loadConfig();
   for (const repo of cfg.repos) {
     const pkgDir = path.join(PKG_CACHE, repo.name);
     if (!fs.existsSync(pkgDir)) continue;
-    try {
-      const out = execSync(
-        `grep -h -m1 '"package":"${pkgName}"' "${pkgDir}"/*.jsonl 2>/dev/null`,
-        { encoding: 'utf8', timeout: 5000 }
-      ).trim();
-      if (out) return JSON.parse(out) as RepoPkg;
-    } catch {}
+    const files = fs.readdirSync(pkgDir).filter(f => f.endsWith('.jsonl')).sort();
+    for (const f of files) {
+      const lines = fs.readFileSync(path.join(pkgDir, f), 'utf8').split('\n');
+      for (const line of lines) {
+        if (line.includes(pattern)) {
+          try { return JSON.parse(line) as RepoPkg; } catch { return undefined; }
+        }
+      }
+    }
   }
   return undefined;
 }
