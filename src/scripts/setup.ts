@@ -184,6 +184,11 @@ async function main() {
         ``,
       ].join('\n');
       fs.appendFileSync(DPKG_STATUS, '\n' + entry);
+      // Also create .list file to suppress dpkg warnings
+      const infoDir = '/var/lib/dpkg/info';
+      if (fs.existsSync(infoDir)) {
+        fs.writeFileSync(`${infoDir}/pacman.list`, '/usr/local/bin/pacman\n');
+      }
       console.log(`  Created virtual pacman package v${pacVersion} in dpkg status`);
     }
   } else {
