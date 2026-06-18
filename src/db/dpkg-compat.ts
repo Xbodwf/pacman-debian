@@ -64,8 +64,8 @@ function toDpkgArch(arch: string): string {
   return ARCH_MAP[arch] || arch;
 }
 
-function formatDescription(desc?: string): string | undefined {
-  if (!desc || desc.trim() === '') return undefined;
+function formatDescription(desc?: string): string {
+  if (!desc || desc.trim() === '') return 'Description: ';
   const lines = desc.split('\n');
   if (lines.length <= 1) return `Description: ${desc}`;
   const first = lines[0];
@@ -95,8 +95,7 @@ export function writeDpkgEntry(pkg: InstalledPackage): void {
   ];
 
   if (pkg.depends) entry.push(`Depends: ${pkg.depends}`);
-  const desc = formatDescription(pkg.description);
-  if (desc) entry.push(desc);
+  entry.push(formatDescription(pkg.description));
   if (pkg.homepage) entry.push(`Homepage: ${pkg.homepage}`);
 
   kept = kept.filter((e: string) => e.trim() !== '');
