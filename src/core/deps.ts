@@ -19,21 +19,23 @@ export interface DepResult {
 
 /* ---- Dependency string parser ---- */
 export function parseDep(s: string): Dep[] {
-  // Handle OR deps: "foo | bar >= 1.0"
   const alternatives = s.split('|').map(a => a.trim());
   return alternatives.map(a => {
     let name = a;
     let operator: string | undefined;
     let version: string | undefined;
 
-    const opMatch = a.match(/([\(<>=!]+)\s*([\d:\w.~+*-]+[\w.+*~-]*)\s*\)?$/);
-    if (opMatch) {
-      operator = opMatch[1].trim();
-      version = opMatch[2].trim();
-      name = a.slice(0, a.indexOf(opMatch[1])).trim();
+    // Debian: "pkg (>= 1.0)" or Arch: "pkg>=1.0"
+    const parenMatch = a.match(/\(?\s*([<>=!]+)\s*([^)]+)\s*\)?\s*$/);
+    if (parenMatch) {
+      operator = parenMatch[1].trim();
+      version = parenMatch[2].trim().replace(/\)$/, '').trim();
+      name = a.slice(0, a.indexOf(parenMatch[1])).trim();
+      // Clean trailing paren/space from name
+      name = name.replace(/\(\s*$/, '').trim();
     }
 
-    // Architecture qualifier: "pkg:any", "libc6:arm64"
+    // Architecture qualifier: "libc6:arm64"
     const archSep = name.lastIndexOf(':');
     let arch: string | undefined;
     if (archSep > 0 && name.length - archSep <= 8 && !name.includes('/')) {
@@ -155,9 +157,14 @@ export function resolveDeps(targets: string[]): { install: DepResult[]; errors: 
 function parseDepList(s?: string): Dep[] {
   if (!s) return [];
   const result: Dep[] = [];
-  for (const part of s.split(',')) {
-    const parsed = parseDep(part.trim());
-    if (parsed.length > 0) result.push(parsed[0]); // take first alternative
+  // Arch format: space-separated (glibc>=2.35  yyjson)
+  // Debian format: comma-separated (libc6 (>= 2.34), libyyjson)
+  const parts = s.includes(',') ? s.split(',') : s.split(/\s+/);
+  for (const part of parts) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const parsed = parseDep(trimmed);
+    if (parsed.length > 0) result.push(parsed[0]);
   }
   return result;
 }
