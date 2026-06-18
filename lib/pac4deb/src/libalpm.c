@@ -10,6 +10,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <dirent.h>
 #include <sys/mman.h>
 #include <dirent.h>
 #include <time.h>
@@ -219,21 +220,100 @@ static alpm_list_t *load_json_file(const char *filepath) {
 	return pkgs;
 }
 
-/* Load local database from status.json */
+/* Load local database from localdb directory structure */
+static alpm_list_t *load_localdb_dir(const char *dirpath) {
+	alpm_list_t *pkgs = NULL;
+	DIR *dir = opendir(dirpath);
+	if (!dir) return NULL;
+	struct dirent *entry;
+	while ((entry = readdir(dir)) != NULL) {
+		if (entry->d_name[0] == '.' || strcmp(entry->d_name, "by-name") == 0) continue;
+		char desc_path[4096];
+		snprintf(desc_path, sizeof(desc_path), "%s/%s/desc", dirpath, entry->d_name);
+		if (access(desc_path, F_OK) != 0) continue;
+		// Read desc file - it's a single JSON object (one line or formatted)
+		FILE *f = fopen(desc_path, "r");
+		if (!f) continue;
+		fseek(f, 0, SEEK_END);
+		long len = ftell(f);
+		rewind(f);
+		char *buf = malloc(len + 1);
+		if (buf) {
+			int n = fread(buf, 1, len, f);
+			buf[n] = 0;
+			// Parse JSON and create pkg_internal
+			json_ctx j;
+			json_init(&j, buf);
+			// The desc file is a JSON object: {"name":"...","version":"...",...}
+			// We need to parse it similar to load_json_file but for a single object
+			if (json_next(&j) == '{') {
+				pkg_internal *p = pkg_new("");
+				while (json_peek(&j) == '"') {
+					char *k = json_string(&j);
+					if (!k) break;
+					json_next(&j);
+					char *v = json_value(&j);
+					if (strcmp(k, "name") == 0) { free(p->name); p->name = v; v = NULL; }
+					else if (strcmp(k, "version") == 0) { free(p->version); p->version = v; v = NULL; }
+					else if (strcmp(k, "description") == 0) { free(p->desc); p->desc = v; v = NULL; }
+					else if (strcmp(k, "architecture") == 0) { free(p->arch); p->arch = v; v = NULL; }
+					else if (strcmp(k, "depends") == 0) { free(p->depends); p->depends = v; v = NULL; }
+					else if (strcmp(k, "conflicts") == 0) { free(p->conflicts); p->conflicts = v; v = NULL; }
+					else if (strcmp(k, "provides") == 0) { free(p->provides); p->provides = v; v = NULL; }
+					else if (strcmp(k, "reason") == 0) p->reason = (v && strcmp(v, "explicit") == 0) ? ALPM_PKG_REASON_EXPLICIT : ALPM_PKG_REASON_DEPEND;
+					free(k); free(v);
+					if (json_peek(&j) == ',') json_next(&j);
+				}
+				if (p->name && *p->name) pkgs = alpm_list_add(pkgs, p);
+				else pkg_free(p);
+			}
+			free(buf);
+		}
+		fclose(f);
+	}
+	closedir(dir);
+	return pkgs;
+}
+
 static int load_local_db(alpm_db_t *db) {
 	if (db->pkgs) return 0;
 	char path[4096];
-	snprintf(path, sizeof(path), "%s/status.json", DB_DIR);
-	db->pkgs = load_json_file(path);
+	snprintf(path, sizeof(path), "%s/local", DB_DIR);
+	db->pkgs = load_localdb_dir(path);
 	return 0;
 }
 
-/* Load sync database from packages cache */
+/* Load sync database from JSONL chunks */
+static alpm_list_t *load_jsonl_dir(const char *dirpath) {
+	alpm_list_t *pkgs = NULL;
+	DIR *dir = opendir(dirpath);
+	if (!dir) return NULL;
+	struct dirent *entry;
+	while ((entry = readdir(dir)) != NULL) {
+		if (!strstr(entry->d_name, ".jsonl")) continue;
+		char path[4096];
+		snprintf(path, sizeof(path), "%s/%s", dirpath, entry->d_name);
+		alpm_list_t *chunk = load_json_file(path);
+		// Append chunk to pkgs
+		if (chunk) {
+			if (pkgs) {
+				alpm_list_t *last = alpm_list_last(pkgs);
+				last->next = chunk;
+				chunk->prev = last;
+			} else {
+				pkgs = chunk;
+			}
+		}
+	}
+	closedir(dir);
+	return pkgs;
+}
+
 static int load_sync_db(alpm_db_t *db) {
 	if (db->pkgs) return 0;
 	char path[4096];
-	snprintf(path, sizeof(path), "%s/%s.json", PKG_CACHE, db->treename);
-	db->pkgs = load_json_file(path);
+	snprintf(path, sizeof(path), "%s/%s", PKG_CACHE, db->treename);
+	db->pkgs = load_jsonl_dir(path);
 	return 0;
 }
 

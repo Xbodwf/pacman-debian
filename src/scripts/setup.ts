@@ -68,6 +68,32 @@ async function main() {
     }
   }
 
+  // --- Symlink /etc/pacman.conf → /etc/pacman-debian/pacman.conf ---
+  const pacmanConfLink = '/etc/pacman.conf';
+  const confLinkExists = fs.existsSync(pacmanConfLink);
+  if (confLinkExists) {
+    try {
+      const stat = fs.lstatSync(pacmanConfLink);
+      if (stat.isSymbolicLink()) {
+        const target = fs.readlinkSync(pacmanConfLink);
+        if (target === CONFIG_PATH) {
+          console.log(`  ${pacmanConfLink} → ${CONFIG_PATH} already exists`);
+        } else {
+          console.log(`  ${pacmanConfLink} exists but points to ${target} (not ${CONFIG_PATH})`);
+        }
+      } else {
+        console.log(`  ${pacmanConfLink} exists as a real file, skipping symlink`);
+      }
+    } catch { 
+      console.log(`  ${pacmanConfLink} check failed`);
+    }
+  } else {
+    if (await ask(`Create symlink ${pacmanConfLink} → ${CONFIG_PATH}?`, true)) {
+      fs.symlinkSync(CONFIG_PATH, pacmanConfLink);
+      console.log(`  Created: ${pacmanConfLink} → ${CONFIG_PATH}`);
+    }
+  }
+
   // --- Default config ---
   if (!fs.existsSync(CONFIG_PATH)) {
     if (await ask('Create default pacman.conf?', true)) {
