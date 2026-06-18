@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { execSync } from 'node:child_process';
 import { buildPkgbuild } from './build';
 
 function help(): void {
@@ -62,14 +63,25 @@ async function main(): Promise<void> {
   }
 
   if (options.printsrcinfo || options.geninteg) {
-    // These don't need root
     await buildPkgbuild(options);
     return;
   }
 
-  if ((options.install || options.syncdeps) && (process.getuid && process.getuid() !== 0)) {
-    console.error('error: --install or --syncdeps requires root');
-    process.exit(1);
+  const needsRoot = (options.install || options.syncdeps) && !options.skipPackage;
+  if (needsRoot && (process.getuid && process.getuid() !== 0)) {
+    // Use sudo for the install part
+    if (options.install || options.syncdeps) {
+      // Re-run self with sudo for install, but build as user first
+      const skipInstall = { ...options, install: false, syncdeps: false };
+      await buildPkgbuild(skipInstall);
+      // Now re-run with sudo for install
+      const self = process.argv[1];
+      const sudoArgs = process.argv.slice(2).filter(a => a !== '-i' && a !== '--install' && a !== '-s' && a !== '--syncdeps');
+      if (options.install) sudoArgs.push('-i');
+      if (options.syncdeps) sudoArgs.push('-s');
+      execSync(`sudo "${self}" ${sudoArgs.join(' ')}`, { stdio: 'inherit' });
+      return;
+    }
   }
 
   await buildPkgbuild(options);

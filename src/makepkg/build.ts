@@ -6,8 +6,6 @@ import { execSync } from 'node:child_process';
 import { parsePkgbuild, pkgFilename, printSrcinfo } from './pkgbuild';
 import type { PkgbuildInfo } from './pkgbuild';
 
-const CACHE_BASE = '/var/cache/pacman-debian/makepkg';
-
 export interface BuildOptions {
   install?: boolean;
   clean?: boolean;
@@ -118,9 +116,9 @@ export async function buildPkgbuild(options: BuildOptions): Promise<string> {
   const fullVersion = [info.pkgver, info.pkgrel].filter(Boolean).join('-');
   console.log(`  -> package: ${info.pkgname}-${fullVersion}`);
 
-  const srcdir = path.join(CACHE_BASE, 'src', `${info.pkgname}-${info.pkgver}`);
-  const pkgdir = path.join(CACHE_BASE, 'pkg', `${info.pkgname}-${info.pkgver}`);
-  const outDir = path.join(CACHE_BASE, 'out');
+  const srcdir = path.join(workDir, 'src', `${info.pkgname}-${info.pkgver}`);
+  const pkgdir = path.join(workDir, 'pkg', `${info.pkgname}-${info.pkgver}`);
+  const outDir = workDir;
 
   ensureDir(srcdir);
   ensureDir(pkgdir);
