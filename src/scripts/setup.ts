@@ -135,6 +135,7 @@ async function main() {
   const commands: [string, string][] = [
     ['pacman', path.join(projectDir, 'dist', 'index.js')],
     ['makepkg', path.join(projectDir, 'dist', 'makepkg', 'index.js')],
+    ['pacman-conf', path.join(projectDir, 'dist', 'scripts', 'pacman-conf.js')],
   ];
 
   for (const [name, target] of commands) {

@@ -152,10 +152,16 @@ function resolveDepsRecursive(pkgName: string, seen: Set<string>): RepoPkg[] {
 
 export async function installPkg(target: string, opts: InstallOptions = {}): Promise<boolean> {
   if (fs.existsSync(target) && ['.deb', '.pkg.tar.zst', '.pkg.tar.xz', '.pkg.tar.gz'].some(e => target.endsWith(e))) {
-    console.log(`Packages (1): ${path.basename(target, path.extname(target))}\n`);
+    const cols = process.stdout.columns || 80;
+    const barLen = Math.max(Math.floor((cols - 30) * 0.35), 8);
+    const barDone = '#'.repeat(barLen);
+    const fname = path.basename(target).replace(/\.(pkg\.tar\.(zst|xz|gz)|deb)$/, '');
+
+    console.log(`Packages (1): ${fname}\n`);
     if (!await confirm(':: Proceed with installation?')) return false;
     if (opts.print) { console.log(`  would install: ${path.basename(target)}`); return true; }
-    console.log('loading package data...');
+    process.stdout.write(`(1/1) loading package data...           ${barDone} 100%\n`);
+    process.stdout.write(`(1/1) installing ${fname.padEnd(25)}${barDone} 100%\n`);
     return await installPkgFile(path.resolve(target), 'explicit', opts);
   }
 

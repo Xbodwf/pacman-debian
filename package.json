@@ -6,8 +6,9 @@
   "main": "dist/index.js",
   "bin": {
     "pacman": "./dist/index.js",
-    "pacman-debian-setup": "./dist/scripts/setup.js",
-    "makepkg": "./dist/makepkg/index.js"
+    "makepkg": "./dist/makepkg/index.js",
+    "pacman-conf": "./dist/scripts/pacman-conf.js",
+    "pacman-debian-setup": "./dist/scripts/setup.js"
   },
   "scripts": {
     "build": "tsc",
