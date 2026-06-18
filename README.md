@@ -94,6 +94,27 @@ Architecture = aarch64
 A symlink at `/etc/pacman.conf` → `/etc/pacman-debian/pacman.conf` is created
 during setup for compatibility with tools that hardcode this path (e.g., yay).
 
+Use `pacman-conf` to view the parsed configuration with all `Include` files
+resolved and `$repo`/`$arch` variables substituted:
+
+```bash
+$ pacman-conf
+# pacman-debian configuration
+[options]
+Architecture = arm64
+
+[bookworm]
+Server = https://mirrors.tuna.tsinghua.edu.cn/debian
+Type = debian
+Dist = bookworm
+Components = main contrib non-free non-free-firmware
+
+[extra]
+Server = http://mirror.archlinuxarm.org/$arch/$repo
+Type = arch
+Architecture = aarch64
+```
+
 ## Database
 
 ### Local database: `/var/lib/pacman-debian/local/`
@@ -121,9 +142,15 @@ still see the package.
 ### Repository cache: `/var/cache/pacman-debian/packages/`
 
 Each repository is cached in JSON Lines chunks (5000 packages per `.jsonl`
-file) for O(1) single-package lookup via line scan, avoiding filesystem
-pressure on large repos. Full parse of the 15MB cache is only done when
-listing all packages (`-Sl`, `-Su`, etc.).
+file) for fast per-package lookup without loading everything into memory.
+
+Single-package operations like `-S <pkg>` use `findInRepo()` — a native
+Node.js line scan on the target JSONL chunk. Since each line is a complete
+JSON object, the scan finds the exact package in O(N/chunks) time without
+parsing the other 15 MB of data.
+
+List operations (`-Sl`, `-Ss`, `-Su`) do a full parse of all JSONL chunks,
+which is unavoidable since they need every package.
 
 ## Repository Support
 
@@ -149,16 +176,44 @@ modification. It reads:
 
 Over 200 stubs are provided for rarely-used functions.
 
-## makepkg
+## makepkg (`src/makepkg/`)
 
-A minimal `makepkg` implementation in `src/makepkg/` that can build packages
-from PKGBUILDs:
+A standalone `makepkg` implementation that builds Arch Linux packages from
+PKGBUILDs without requiring `base-devel` or any Arch tools.
 
-- Parses PKGBUILD via bash sourcing
-- Downloads and extracts sources
-- Runs `build()` and `package()` functions
-- Creates `.pkg.tar.zst` archives with `.PKGINFO` metadata
-- Supports `--syncdeps` for dependency resolution
+```bash
+# Build a package from a PKGBUILD
+cd /path/to/PKGBUILD/dir
+makepkg --syncdeps --install
+```
+
+Features:
+
+- Parses PKGBUILD via bash sourcing (`source PKGBUILD`) — supports all
+  standard variables (`pkgname`, `pkgver`, `source`, `depends`, `makedepps`,
+  `sha256sums`, etc.)
+- Downloads and verifies source files (supports http/https URLs with checksum
+  verification)
+- Extracts archives: `.tar.gz`, `.tar.xz`, `.tar.bz2`, `.tar.zst`, `.zip`
+- Runs `prepare()`, `build()`, `check()`, and `package()` functions in a clean
+  environment
+- Creates `.pkg.tar.zst` archives with valid `.PKGINFO` metadata
+- Dependency resolution via `--syncdeps` — installs missing dependencies
+  through pacman-debian's sync databases (Debian and Arch repos)
+- Supports `--install` (`-i`), `--clean` (`-c`), `--rmdeps`
+
+Flags:
+
+| Flag | Description |
+|------|-------------|
+| `-s, --syncdeps` | Install missing dependencies via pacman |
+| `-i, --install` | Install the built package |
+| `-c, --clean` | Clean up build files after packaging |
+| `-r, --rmdeps` | Remove installed dependencies after build |
+| `-f, --force` | Overwrite existing package file |
+| `-o, --nobuild` | Download and extract sources only (no build) |
+| `--nocolor` | Disable colored output |
+| `--printsrcinfo` | Print `.SRCINFO` and exit |
 
 ## Commands
 
@@ -214,6 +269,14 @@ from PKGBUILDs:
 | `pacman -T <pkg>` | Check if dependencies are satisfied |
 | `pacman -F <file>` | Search which package provides a file |
 | `pacman -V` | Show version |
+
+### Bundled Tools
+
+| Command | Description |
+|---------|-------------|
+| `pacman-conf` | Print parsed configuration (like Arch's `pacman-conf`). View resolved Server URLs, Type, Dist, Components for each repo. |
+| `makepkg` | Build Arch Linux packages from PKGBUILD files. Supports `--syncdeps`, `--install`, `--clean`, source download, and `.pkg.tar.zst` creation. |
+| `pacman-debian-setup` | Interactive setup: creates config, Include files, symlinks (`/etc/pacman.conf`, `/usr/local/bin/pacman`), and virtual `pacman` dpkg entry. |
 
 ### Global Flags
 
