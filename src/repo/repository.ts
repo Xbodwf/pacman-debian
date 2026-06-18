@@ -13,18 +13,19 @@ const CACHE_DIR = '/var/cache/pacman-debian';
 const PKG_CACHE = path.join(CACHE_DIR, 'packages');
 const DEB_CACHE = path.join(CACHE_DIR, 'pkg');
 
-async function downloadFile(url: string, onProgress?: (received: number, total: number) => void): Promise<Buffer> {
+async function downloadFile(url: string, onProgress?: (received: number, total: number) => void, ifModifiedSince?: string): Promise<Buffer | null> {
   const maxRedirects = 5;
-  const doRequest = (u: string, redirects: number): Promise<Buffer> => {
+  const doRequest = (u: string, redirects: number): Promise<Buffer | null> => {
     return new Promise((resolve, reject) => {
       const mod = u.startsWith('https') ? https : http;
-      mod.get(u, { timeout: 60000, headers: { 'User-Agent': 'Wget/1.21' } }, (res) => {
+      const headers: Record<string, string> = { 'User-Agent': 'Wget/1.21' };
+      if (ifModifiedSince) headers['If-Modified-Since'] = ifModifiedSince;
+
+      mod.get(u, { headers }, (res) => {
+        if (res.statusCode === 304) { resolve(null); return; }
         if (res.statusCode && (res.statusCode >= 300 && res.statusCode < 400)) {
           const loc = res.headers['location'];
-          if (!loc || redirects >= maxRedirects) {
-            reject(new Error(`redirect limit`));
-            return;
-          }
+          if (!loc || redirects >= maxRedirects) { reject(new Error('redirect limit')); return; }
           const next = loc.startsWith('http') ? loc : new URL(loc, u).href;
           doRequest(next, redirects + 1).then(resolve, reject);
           return;
@@ -67,7 +68,7 @@ function parseDebianPackages(content: string, repo: string): RepoPkg[] {
   return pkgs;
 }
 
-async function syncDebian(repo: RepoConfig, arch: string, onProgress?: (rec: number, tot: number) => void): Promise<{ pkgs: RepoPkg[]; size: number }> {
+async function syncDebian(repo: RepoConfig, arch: string, ifModifiedSince?: string, onProgress?: (rec: number, tot: number) => void): Promise<{ pkgs: RepoPkg[]; size: number }> {
   const all: RepoPkg[] = [];
   let totalSize = 0;
   const comps = repo.components || ['main'];
@@ -78,13 +79,15 @@ async function syncDebian(repo: RepoConfig, arch: string, onProgress?: (rec: num
       try {
         const raw = await downloadFile(`${base}.${ext}`, (rec, tot) => {
           if (onProgress) onProgress(totalSize + rec, totalSize + (tot || 0));
-        });
+        }, ifModifiedSince);
+        if (raw === null) return { pkgs: [], size: 0 }; // 304 — up to date
         totalSize += raw.length;
         buf = decompress(raw, `packages.${ext}`);
         break;
       } catch { continue; }
     }
     if (buf) all.push(...parseDebianPackages(buf.toString('utf8'), repo.name));
+    ifModifiedSince = undefined; // only check first component with conditional request
   }
   return { pkgs: all, size: totalSize };
 }
@@ -140,12 +143,13 @@ function resolveServer(server: string, repoName: string, arch: string): string {
   return server.replace(/\$repo/g, repoName).replace(/\$arch/g, arch);
 }
 
-async function syncArch(repo: RepoConfig, globalArch: string, onProgress?: (rec: number, tot: number) => void): Promise<RepoPkg[]> {
+async function syncArch(repo: RepoConfig, globalArch: string, ifModifiedSince?: string, onProgress?: (rec: number, tot: number) => void): Promise<RepoPkg[]> {
   const arch = repo.architecture || globalArch;
   const baseUrl = resolveServer(repo.server, repo.name, arch);
   const dbFile = repo.dbFile || `${repo.name}.db.tar.gz`;
   const url = `${baseUrl}/${dbFile}`;
-  const buf = await downloadFile(url, onProgress);
+  const buf = await downloadFile(url, onProgress, ifModifiedSince);
+  if (buf === null) return []; // 304 — up to date
   const tar = decompress(buf, 'repo.tar.gz');
   return parseArchDb(tar, repo.name);
 }
@@ -161,12 +165,22 @@ function humanSize(n: number, dec: number): { val: string; unit: string } {
 }
 
 // ---- Main sync ----
-export async function syncRepos(): Promise<void> {
+export async function syncRepos(force: boolean = false): Promise<void> {
   const cfg = loadConfig();
   if (!fs.existsSync(PKG_CACHE)) fs.mkdirSync(PKG_CACHE, { recursive: true });
   const cols = process.stdout.columns || 80;
 
   for (const repo of cfg.repos) {
+    // Check if we already have a cache file
+    const cacheFile = path.join(PKG_CACHE, `${repo.name}.json`);
+    let ifModifiedSince: string | undefined;
+
+    if (!force && fs.existsSync(cacheFile)) {
+      try {
+        const st = fs.statSync(cacheFile);
+        ifModifiedSince = st.mtime.toUTCString();
+      } catch {}
+    }
     let totalDownloaded = 0;
     let totalExpected = 0;
     const startTime = Date.now();
@@ -218,16 +232,22 @@ export async function syncRepos(): Promise<void> {
 
     try {
       if (repo.type === 'arch') {
-        pkgs = await syncArch(repo, cfg.architecture, (rec, tot) => {
+        pkgs = await syncArch(repo, cfg.architecture, ifModifiedSince, (rec, tot) => {
           totalDownloaded = rec; totalExpected = tot;
           updateProgress(false);
         });
       } else {
-        const result = await syncDebian(repo, cfg.architecture, (rec, tot) => {
+        const result = await syncDebian(repo, cfg.architecture, ifModifiedSince, (rec, tot) => {
           totalDownloaded = rec; totalExpected = tot;
           updateProgress(false);
         });
         pkgs = result.pkgs;
+      }
+
+      // If 304 (empty result due to conditional request), show up to date
+      if (ifModifiedSince && pkgs.length === 0 && totalDownloaded === 0) {
+        process.stdout.write(`\r ${repo.name}.db is up to date\n`);
+        continue;
       }
 
       fs.writeFileSync(path.join(PKG_CACHE, `${repo.name}.json`), JSON.stringify(pkgs));
@@ -316,7 +336,7 @@ export function findInRepo(pkgName: string): RepoPkg | undefined {
   return getRepoCache().find(p => p.package === pkgName);
 }
 
-export async function downloadPkg(rp: RepoPkg, dest?: string): Promise<string> {
+export async function downloadPkg(rp: RepoPkg, dest?: string, onProgress?: (rec: number, tot: number) => void): Promise<string> {
   if (!fs.existsSync(DEB_CACHE)) fs.mkdirSync(DEB_CACHE, { recursive: true });
   const fn = path.basename(rp.filename);
   const local = path.join(dest || DEB_CACHE, fn);
@@ -336,7 +356,8 @@ export async function downloadPkg(rp: RepoPkg, dest?: string): Promise<string> {
     url = `${repo.server}/${rp.filename}`;
   }
 
-  const data = await downloadFile(url);
+  const data = await downloadFile(url, onProgress);
+  if (!data) throw new Error('failed to download package');
   fs.writeFileSync(local, data);
   return local;
 }

@@ -15,7 +15,6 @@ function removeSingle(name: string, opts: RemoveOptions = {}): boolean {
     for (const d of deps) {
       const dp = getPackage(db, d);
       if (dp && (dp.reason === 'dependency' || opts.cascade)) {
-        console.log(`  removing ${d} (dependency)`);
         removeSingle(d, { ...opts, recursive: false });
       }
     }
@@ -25,7 +24,6 @@ function removeSingle(name: string, opts: RemoveOptions = {}): boolean {
     const db = loadDatabase();
     for (const [pname, ppkg] of db.packages) {
       if (ppkg.depends && ppkg.depends.includes(name)) {
-        console.log(`  removing ${pname} (required by ${name})`);
         removeSingle(pname, { ...opts, recursive: false, cascade: true });
       }
     }
@@ -52,7 +50,6 @@ function removeSingle(name: string, opts: RemoveOptions = {}): boolean {
   try { removeDpkgEntry(name); } catch {}
   removePkg(db, name);
   saveDatabase(db);
-  console.log(`\n:: ${name} removed`);
   return true;
 }
 
@@ -70,5 +67,10 @@ export async function removeByName(name: string, opts: RemoveOptions = {}): Prom
 
   if (!await confirm(':: Proceed with removal?', false)) return false;
 
-  return removeSingle(name, opts);
+  const cols = process.stdout.columns || 80;
+  const bar = '#'.repeat(Math.max(Math.floor((cols - 45) * 0.35), 8));
+  removeSingle(name, opts);
+  process.stdout.write(`(1/1) removing ${name.padEnd(25)}${bar} 100%\n`);
+  console.log(`:: ${name} removed`);
+  return true;
 }

@@ -11,6 +11,7 @@ import {
 } from '../db/database';
 import { writeDpkgEntry, dpkgHasPackage } from '../db/dpkg-compat';
 import { formatBytes } from '../ui/format';
+import { humanSize, drawProgressBar, formatRate, formatETA } from '../ui/progress';
 import { confirm } from '../ui/prompt';
 import type { InstalledPackage, RepoPkg } from '../core/types';
 import type { InstallOptions } from '../core/options';
@@ -215,14 +216,44 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
     return allPkgs.length;
   }
 
+  const cols = process.stdout.columns || 80;
+
   for (let i = 0; i < allPkgs.length; i++) {
     const p = allPkgs[i];
     const isExplicit = resolved.some(r => r.package === p.package);
-    console.log(`(${i + 1}/${allPkgs.length}) downloading ${p.package}...`);
-    const localPath = await downloadPkg(p);
-    console.log(`(${i + 1}/${allPkgs.length}) checking package integrity...`);
-    console.log(`(${i + 1}/${allPkgs.length}) loading package files...`);
-    console.log(`(${i + 1}/${allPkgs.length}) installing ${p.package}...`);
+    const prefix = `(${i + 1}/${allPkgs.length}) `;
+    const nameMax = Math.max(20, cols - 60);
+
+    // Download with progress bar
+    let prevTime = Date.now(), prevBytes = 0, smoothRate = 0;
+    const pname = p.package.length > nameMax ? p.package.slice(0, nameMax - 3) + '...' : p.package;
+    process.stdout.write(`${prefix}downloading ${pname}`);
+
+    const localPath = await downloadPkg(p, undefined, (rec, tot) => {
+      const now = Date.now();
+      const chunkSec = Math.max((now - prevTime) / 1000, 0.001);
+      const instant = (rec - prevBytes) / chunkSec;
+      smoothRate = smoothRate > 0 ? (instant + 2 * smoothRate) / 3 : instant;
+      prevTime = now; prevBytes = rec;
+
+      const dl = humanSize(rec, 1);
+      const rateS = formatRate(smoothRate);
+      const eta = smoothRate > 0 && tot > 0 ? (tot - rec) / smoothRate : 0;
+      const etaS = formatETA(eta);
+      const pct = tot > 0 ? Math.round(rec / tot * 100) : 0;
+      const bar = drawProgressBar(pct, cols);
+      process.stdout.write(`\r${prefix}${pname.padEnd(nameMax)}${dl.val.padStart(6)} ${dl.unit}  ${rateS} ${etaS} [${bar}] ${String(pct).padStart(3)}%`);
+    });
+
+    // Integrity check (just show completed bar)
+    const barDone = drawProgressBar(100, cols);
+    process.stdout.write(`\r${prefix}checking package integrity            ${barDone} 100%\n`);
+
+    // Loading (just show completed bar)
+    process.stdout.write(`${prefix}loading package files                 ${barDone} 100%\n`);
+
+    // Installing
+    process.stdout.write(`${prefix}installing ${pname.padEnd(nameMax)}${barDone} 100%\n`);
     await installPkgFile(localPath, isExplicit ? (opts.asdeps ? 'dependency' : 'explicit') : 'dependency', opts);
   }
 

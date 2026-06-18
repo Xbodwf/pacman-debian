@@ -158,6 +158,7 @@ export async function parseArgs(args: string[]): Promise<void> {
 
   if (op === 'S' || op === 'U') {
     const doRefresh = flags.includes('y');
+    const forceRefresh = flags.includes('yy');
     const doUpgrade = flags.includes('u');
     const doSearch = flags.includes('s');
     const doInfo = flags.includes('i');
@@ -202,7 +203,7 @@ export async function parseArgs(args: string[]): Promise<void> {
     if (doRefresh && doUpgrade) { await syncAndUpgrade(opts); return; }
     if (doRefresh) {
       console.log(':: Synchronizing package databases...');
-      await syncRepos();
+      await syncRepos(forceRefresh);
       return;
     }
     if (doUpgrade) { await upgradeOnly(opts); return; }

@@ -21,9 +21,9 @@ async function collectUpgradeCandidates(): Promise<UpgradeTarget[]> {
   return targets;
 }
 
-export async function syncAndUpgrade(opts: InstallOptions = {}): Promise<void> {
+export async function syncAndUpgrade(opts: InstallOptions = {}, force = false): Promise<void> {
   console.log(':: Synchronizing package databases...');
-  await syncRepos();
+  await syncRepos(force);
   await doUpgrade(opts);
 }
 
