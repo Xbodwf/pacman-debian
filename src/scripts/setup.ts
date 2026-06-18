@@ -115,6 +115,40 @@ async function main() {
     console.log(`  ${CONFIG_PATH} already exists`);
   }
 
+  // --- Global symlinks for pacman and makepkg ---
+  const projectDir = path.resolve(__dirname, '../..');
+  const commands: [string, string][] = [
+    ['pacman', path.join(projectDir, 'dist', 'index.js')],
+    ['makepkg', path.join(projectDir, 'dist', 'makepkg', 'index.js')],
+  ];
+
+  for (const [name, target] of commands) {
+    const linkPath = `/usr/local/bin/${name}`;
+    const exists = fs.existsSync(linkPath);
+    if (exists) {
+      try {
+        const existing = fs.readlinkSync(linkPath);
+        if (existing === target) {
+          console.log(`  ${linkPath} → ${target} already exists`);
+        } else {
+          console.log(`  ${linkPath} exists but points to ${existing}`);
+          if (await ask(`  Relink ${linkPath} → ${target}?`, true)) {
+            fs.unlinkSync(linkPath);
+            fs.symlinkSync(target, linkPath);
+            console.log(`  Relinked: ${linkPath} → ${target}`);
+          }
+        }
+      } catch {
+        console.log(`  ${linkPath} is not a symlink, skipping`);
+      }
+    } else {
+      if (await ask(`Create symlink ${linkPath} → ${target}?`, true)) {
+        fs.symlinkSync(target, linkPath);
+        console.log(`  Created: ${linkPath} → ${target}`);
+      }
+    }
+  }
+
   console.log('');
   console.log(':: Setup complete');
   console.log('');
@@ -122,6 +156,7 @@ async function main() {
   console.log('  1. Edit /etc/pacman-debian/pacman.conf to add your repositories');
   console.log('  2. Run sudo pacman -Sy to sync');
   console.log('  3. Run sudo pacman -S <package> to install');
+  console.log('  4. Run makepkg in a directory with PKGBUILD to build packages');
 }
 
 main().catch(e => {
