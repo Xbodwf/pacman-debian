@@ -136,9 +136,15 @@ function parseArchDb(dbTar: Buffer, repo: string): RepoPkg[] {
   return pkgs;
 }
 
-async function syncArch(repo: RepoConfig, onProgress?: (rec: number, tot: number) => void): Promise<RepoPkg[]> {
+function resolveServer(server: string, repoName: string, arch: string): string {
+  return server.replace(/\$repo/g, repoName).replace(/\$arch/g, arch);
+}
+
+async function syncArch(repo: RepoConfig, globalArch: string, onProgress?: (rec: number, tot: number) => void): Promise<RepoPkg[]> {
+  const arch = repo.architecture || globalArch;
+  const baseUrl = resolveServer(repo.server, repo.name, arch);
   const dbFile = repo.dbFile || `${repo.name}.db.tar.gz`;
-  const url = `${repo.server}/${dbFile}`;
+  const url = `${baseUrl}/${dbFile}`;
   const buf = await downloadFile(url, onProgress);
   const tar = decompress(buf, 'repo.tar.gz');
   return parseArchDb(tar, repo.name);
@@ -212,7 +218,7 @@ export async function syncRepos(): Promise<void> {
 
     try {
       if (repo.type === 'arch') {
-        pkgs = await syncArch(repo, (rec, tot) => {
+        pkgs = await syncArch(repo, cfg.architecture, (rec, tot) => {
           totalDownloaded = rec; totalExpected = tot;
           updateProgress(false);
         });
@@ -321,7 +327,8 @@ export async function downloadPkg(rp: RepoPkg, dest?: string): Promise<string> {
     const cfg = loadConfig();
     const repo = cfg.repos.find(r => r.name === rp.repo);
     if (!repo) throw new Error(`repo ${rp.repo} not found`);
-    url = `${repo.server}/${rp.filename}`;
+    const arch = repo.architecture || cfg.architecture;
+    url = `${resolveServer(repo.server, repo.name, arch)}/${rp.filename}`;
   } else {
     const cfg = loadConfig();
     const repo = cfg.repos.find(r => r.name === rp.repo);

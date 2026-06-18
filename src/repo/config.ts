@@ -32,6 +32,7 @@ export function loadConfig(): Config {
     else if (k === 'dist') cur.dist = v;
     else if (k === 'components') cur.components = v.split(/\s+/).filter(Boolean);
     else if (k === 'dbfile') cur.dbFile = v;
+    else if (k === 'architecture') cur.architecture = v;
   }
   if (cur) cfg.repos.push(cur);
   return cfg;

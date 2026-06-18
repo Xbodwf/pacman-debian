@@ -65,6 +65,7 @@ export interface RepoConfig {
   dist?: string;
   components?: string[];
   dbFile?: string;
+  architecture?: string;
 }
 
 export interface Config {
