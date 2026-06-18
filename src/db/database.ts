@@ -10,6 +10,8 @@ const INFO_DIR = path.join(DATA_DIR, 'info');
 
 function ensureDir(dir: string) { if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }); }
 
+let _dbCache: { mtime: number; data: Database } | null = null;
+
 export function initDb(): void {
   ensureDir(TRANSACTIONS_DIR); ensureDir(INFO_DIR);
   if (!fs.existsSync(STATUS_FILE)) fs.writeFileSync(STATUS_FILE, '{}');
@@ -19,12 +21,21 @@ export function initDb(): void {
 export function loadDatabase(): Database {
   const db: Database = { packages: new Map(), fileIndex: new Map() };
   if (!fs.existsSync(STATUS_FILE)) return db;
+
+  // Cache: skip re-parse if mtime unchanged
+  try {
+    const st = fs.statSync(STATUS_FILE);
+    if (_dbCache && _dbCache.mtime === st.mtimeMs) return _dbCache.data;
+  } catch {}
+
   const raw = JSON.parse(fs.readFileSync(STATUS_FILE, 'utf8'));
   for (const [name, pkg] of Object.entries(raw)) db.packages.set(name, pkg as InstalledPackage);
   if (fs.existsSync(FILE_INDEX_FILE)) {
     const idx = JSON.parse(fs.readFileSync(FILE_INDEX_FILE, 'utf8'));
     for (const [f, p] of Object.entries(idx)) db.fileIndex.set(f, p as string);
   }
+
+  _dbCache = { mtime: fs.statSync(STATUS_FILE).mtimeMs, data: db };
   return db;
 }
 
@@ -36,6 +47,7 @@ export function saveDatabase(db: Database): void {
   const fileObj: Record<string, string> = {};
   for (const [f, p] of db.fileIndex) fileObj[f] = p;
   fs.writeFileSync(FILE_INDEX_FILE, JSON.stringify(fileObj, null, 2));
+  _dbCache = null; // invalidate cache
 }
 
 export function isInstalled(db: Database, name: string): boolean {

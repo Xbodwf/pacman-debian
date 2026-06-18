@@ -6,6 +6,8 @@ import type { InstalledPackage } from '../core/types';
 const DPKG_STATUS = '/var/lib/dpkg/status';
 const DPKG_INFO = '/var/lib/dpkg/info';
 
+let _dpkgCache: { mtime: number; data: Map<string, DpkgEntry> } | null = null;
+
 export interface DpkgEntry {
   package: string;
   version: string;
@@ -22,6 +24,13 @@ export interface DpkgEntry {
 
 export function readDpkgStatus(): Map<string, DpkgEntry> {
   if (!fs.existsSync(DPKG_STATUS)) return new Map();
+
+  // Cache: skip re-parse if mtime unchanged
+  try {
+    const st = fs.statSync(DPKG_STATUS);
+    if (_dpkgCache && _dpkgCache.mtime === st.mtimeMs) return _dpkgCache.data;
+  } catch {}
+
   const content = fs.readFileSync(DPKG_STATUS, 'utf8');
   const result = new Map<string, DpkgEntry>();
   for (const entry of content.split('\n\n').filter(Boolean)) {
@@ -39,6 +48,7 @@ export function readDpkgStatus(): Map<string, DpkgEntry> {
       section: fields['section'], priority: fields['priority'], homepage: fields['homepage'],
     });
   }
+  _dpkgCache = { mtime: fs.statSync(DPKG_STATUS).mtimeMs, data: result };
   return result;
 }
 
