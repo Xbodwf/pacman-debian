@@ -254,7 +254,9 @@ export async function syncRepos(force: boolean = false): Promise<void> {
         continue;
       }
 
+      // Write both JSON cache (for bulk) and per-package desc files (for fast lookup)
       fs.writeFileSync(path.join(PKG_CACHE, `${repo.name}.json`), JSON.stringify(pkgs));
+      writeSyncDescFiles(repo.name, pkgs);
       updateProgress(true);
 
       // Final line (like pacman: stays on screen)
@@ -286,6 +288,44 @@ export async function syncRepos(force: boolean = false): Promise<void> {
   }
 
   invalidateCache();
+}
+
+// ---- Per-package sync cache (like pacman's sync/*.db/) ----
+function writeSyncDescFiles(repoName: string, pkgs: RepoPkg[]): void {
+  const dir = path.join(SYNC_DB, repoName);
+  const byName = path.join(dir, 'by-name');
+  // Clean old entries
+  if (fs.existsSync(dir)) {
+    for (const e of fs.readdirSync(dir)) {
+      if (e === 'by-name') continue;
+      fs.rmSync(path.join(dir, e), { recursive: true, force: true });
+    }
+  }
+  if (!fs.existsSync(byName)) fs.mkdirSync(byName, { recursive: true });
+
+  for (const p of pkgs) {
+    const pkgDir = path.join(dir, `${p.package}-${p.version}`);
+    if (!fs.existsSync(pkgDir)) fs.mkdirSync(pkgDir);
+    fs.writeFileSync(path.join(pkgDir, 'desc'), JSON.stringify(p));
+    // Symlink by-name/<name>
+    const link = path.join(byName, p.package);
+    try { fs.unlinkSync(link); } catch {}
+    fs.symlinkSync(path.relative(byName, pkgDir), link);
+  }
+}
+
+function findInSyncDb(name: string): RepoPkg | undefined {
+  const cfg = loadConfig();
+  for (const repo of cfg.repos) {
+    const link = path.join(SYNC_DB, repo.name, 'by-name', name);
+    if (!fs.existsSync(link)) continue;
+    try {
+      const target = fs.readlinkSync(link);
+      const desc = path.join(SYNC_DB, repo.name, target, 'desc');
+      if (fs.existsSync(desc)) return JSON.parse(fs.readFileSync(desc, 'utf8'));
+    } catch {}
+  }
+  return undefined;
 }
 
 // ---- Cache ----
@@ -337,6 +377,10 @@ export function searchRepo(query: string): RepoPkg[] {
 }
 
 export function findInRepo(pkgName: string): RepoPkg | undefined {
+  // Fast path: per-package desc files
+  const fast = findInSyncDb(pkgName);
+  if (fast) return fast;
+  // Fallback: full cache scan
   return getRepoCache().find(p => p.package === pkgName);
 }
 
