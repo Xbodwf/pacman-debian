@@ -64,6 +64,7 @@ export interface RepoConfig {
   server: string;
   dist?: string;
   components?: string[];
+  dbFile?: string;
 }
 
 export interface Config {

@@ -137,7 +137,8 @@ function parseArchDb(dbTar: Buffer, repo: string): RepoPkg[] {
 }
 
 async function syncArch(repo: RepoConfig, onProgress?: (rec: number, tot: number) => void): Promise<RepoPkg[]> {
-  const url = `${repo.server}/${repo.name}.db.tar.gz`;
+  const dbFile = repo.dbFile || `${repo.name}.db.tar.gz`;
+  const url = `${repo.server}/${dbFile}`;
   const buf = await downloadFile(url, onProgress);
   const tar = decompress(buf, 'repo.tar.gz');
   return parseArchDb(tar, repo.name);
