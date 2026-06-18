@@ -81,10 +81,17 @@ function checkVersion(installed: string, operator: string, required: string): bo
 
 /* ---- Fast path: pre-load DBs once ---- */
 interface DepState {
-  localPkgs: Map<string, string>;  // name → version
+  localPkgs: Map<string, string>;
   dpkgPkgs: Map<string, string>;
   repoCache: RepoPkg[] | null;
 }
+
+// Packages that MUST come from dpkg - never install from Arch repos
+const SYSTEM_PKGS = new Set([
+  'glibc', 'libc6', 'linux-api-headers', 'filesystem', 'iana-etc',
+  'bash', 'coreutils', 'systemd', 'dbus', 'util-linux', 'shadow',
+  'pam', 'libcap', 'libseccomp', 'zlib', 'libzstd', 'libarchive',
+]);
 
 let _state: DepState | null = null;
 
@@ -141,6 +148,14 @@ export function resolveDeps(targets: string[]): { install: DepResult[]; errors: 
     seen.add(name);
 
     if (isDepSatisfied({ name }, state)) continue;
+
+    // System packages must come from dpkg - skip Arch versions
+    if (SYSTEM_PKGS.has(name)) {
+      if (!state.dpkgPkgs.has(name)) {
+        errors.push(`'${name}' is a system package not available via dpkg`);
+      }
+      continue;
+    }
 
     const rp = findProvider(name, state);
     if (!rp) {
