@@ -19,6 +19,7 @@
 
 #define DB_DIR "/var/lib/pacman-debian"
 #define PKG_CACHE "/var/cache/pacman-debian/packages"
+#define DPKG_STATUS "/var/lib/dpkg/status"
 
 /* ---- Simple JSON scanner ---- */
 typedef struct { char *buf; size_t len; size_t pos; } json_ctx;
@@ -104,6 +105,8 @@ static void pkg_free(pkg_internal *p) {
 
 /* ---- Handle ---- */
 static alpm_db_t *db_new(const char *name, int is_local);
+static alpm_list_t *load_dpkg_status(const char *path);
+static alpm_list_t *load_localdb_dir(const char *dirpath);
 static int load_local_db(alpm_db_t *db);
 static int load_sync_db(alpm_db_t *db);
 
@@ -162,8 +165,35 @@ static alpm_db_t *db_new(const char *name, int is_local) {
 	return db;
 }
 
-/* Load JSON file and parse package entries */
-static alpm_list_t *load_json_file(const char *filepath) {
+/* Parse a single flat JSON package object and return a pkg_internal */
+static pkg_internal *json_to_pkg(json_ctx *j) {
+	pkg_internal *p = pkg_new("");
+	while (json_peek(j) == '"') {
+		char *k = json_string(j);
+		if (!k) break;
+		json_next(j);
+		char *v = json_value(j);
+		if (strcmp(k, "name") == 0 || strcmp(k, "package") == 0) { free(p->name); p->name = v; v = NULL; }
+		else if (strcmp(k, "version") == 0) { free(p->version); p->version = v; v = NULL; }
+		else if (strcmp(k, "description") == 0) { free(p->desc); p->desc = v; v = NULL; }
+		else if (strcmp(k, "url") == 0 || strcmp(k, "homepage") == 0) { free(p->url); p->url = v; v = NULL; }
+		else if (strcmp(k, "architecture") == 0 || strcmp(k, "arch") == 0) { free(p->arch); p->arch = v; v = NULL; }
+		else if (strcmp(k, "installTime") == 0) p->installdate = atol(v ? v : "0");
+		else if (strcmp(k, "reason") == 0) p->reason = (v && strcmp(v, "explicit") == 0) ? ALPM_PKG_REASON_EXPLICIT : ALPM_PKG_REASON_DEPEND;
+		else if (strcmp(k, "installedSize") == 0) p->isize = atol(v ? v : "0");
+		else if (strcmp(k, "size") == 0) p->size = atol(v ? v : "0");
+		else if (strcmp(k, "depends") == 0) { free(p->depends); p->depends = v; v = NULL; }
+		else if (strcmp(k, "conflicts") == 0) { free(p->conflicts); p->conflicts = v; v = NULL; }
+		else if (strcmp(k, "provides") == 0) { free(p->provides); p->provides = v; v = NULL; }
+		free(k); free(v);
+		if (json_peek(j) == ',') json_next(j);
+	}
+	if (json_peek(j) == '}') json_next(j);
+	return p;
+}
+
+/* Load JSONL file (one flat JSON object per line) */
+static alpm_list_t *load_jsonl_file(const char *filepath) {
 	alpm_list_t *pkgs = NULL;
 	int fd = open(filepath, O_RDONLY);
 	if (fd < 0) return NULL;
@@ -174,113 +204,154 @@ static alpm_list_t *load_json_file(const char *filepath) {
 	close(fd);
 	if (buf == MAP_FAILED) return NULL;
 
-	json_ctx j;
-	json_init(&j, buf);
-	if (json_next(&j) != '{') { munmap(buf, st.st_size); return NULL; }
-
-	while (json_peek(&j) == '"') {
-		char *key = json_string(&j);
-		if (!key) break;
-		if (json_next(&j) != ':') { free(key); break; }
-
-		if (json_peek(&j) == '{') {
-			// Parse package object
-			json_next(&j); // skip {
-			pkg_internal *p = pkg_new(key);
-			free(key);
-			while (json_peek(&j) == '"') {
-				char *k = json_string(&j);
-				if (!k) break;
-				json_next(&j); // skip :
-				char *v = json_value(&j);
-				if (strcmp(k, "version") == 0) { free(p->version); p->version = v; v = NULL; }
-				else if (strcmp(k, "description") == 0) { free(p->desc); p->desc = v; v = NULL; }
-				else if (strcmp(k, "url") == 0 || strcmp(k, "homepage") == 0) { free(p->url); p->url = v; v = NULL; }
-				else if (strcmp(k, "architecture") == 0 || strcmp(k, "arch") == 0) { free(p->arch); p->arch = v; v = NULL; }
-				else if (strcmp(k, "installTime") == 0) p->installdate = atol(v ? v : "0");
-				else if (strcmp(k, "reason") == 0) p->reason = (v && strcmp(v, "explicit") == 0) ? ALPM_PKG_REASON_EXPLICIT : ALPM_PKG_REASON_DEPEND;
-				else if (strcmp(k, "installedSize") == 0) p->isize = atol(v ? v : "0");
-				else if (strcmp(k, "size") == 0) p->size = atol(v ? v : "0");
-				else if (strcmp(k, "depends") == 0) { free(p->depends); p->depends = v; v = NULL; }
-				else if (strcmp(k, "conflicts") == 0) { free(p->conflicts); p->conflicts = v; v = NULL; }
-				else if (strcmp(k, "provides") == 0) { free(p->provides); p->provides = v; v = NULL; }
-				free(k); free(v);
-				if (json_peek(&j) == ',') json_next(&j);
+	char *line = buf;
+	char *end = buf + st.st_size;
+	while (line < end) {
+		char *nl = memchr(line, '\n', end - line);
+		if (nl) *nl = 0;
+		if (*line == '{') {
+			json_ctx j;
+			json_init(&j, line);
+			if (json_next(&j) == '{') {
+				pkg_internal *p = json_to_pkg(&j);
+				if (p->name && *(p->name)) {
+					p->origin = ALPM_PKG_FROM_SYNCDB;
+					pkgs = alpm_list_add(pkgs, p);
+				} else {
+					pkg_free(p);
+				}
 			}
-			if (json_peek(&j) == '}') json_next(&j);
-			pkgs = alpm_list_add(pkgs, p);
-		} else {
-			// Skip non-object value
-			free(key);
-			free(json_value(&j));
 		}
-		if (json_peek(&j) == ',') json_next(&j);
+		line = nl ? nl + 1 : end;
 	}
 	munmap(buf, st.st_size);
 	return pkgs;
 }
 
-/* Load local database from localdb directory structure */
-static alpm_list_t *load_localdb_dir(const char *dirpath) {
+static alpm_list_t *load_json_file(const char *filepath) {
+	return load_jsonl_file(filepath);
+}
+
+/* Load packages from dpkg status file */
+static alpm_list_t *load_dpkg_status(const char *path) {
 	alpm_list_t *pkgs = NULL;
-	DIR *dir = opendir(dirpath);
-	if (!dir) return NULL;
-	struct dirent *entry;
-	while ((entry = readdir(dir)) != NULL) {
-		if (entry->d_name[0] == '.' || strcmp(entry->d_name, "by-name") == 0) continue;
-		char desc_path[4096];
-		snprintf(desc_path, sizeof(desc_path), "%s/%s/desc", dirpath, entry->d_name);
-		if (access(desc_path, F_OK) != 0) continue;
-		// Read desc file - it's a single JSON object (one line or formatted)
-		FILE *f = fopen(desc_path, "r");
-		if (!f) continue;
-		fseek(f, 0, SEEK_END);
-		long len = ftell(f);
-		rewind(f);
-		char *buf = malloc(len + 1);
-		if (buf) {
-			int n = fread(buf, 1, len, f);
-			buf[n] = 0;
-			// Parse JSON and create pkg_internal
-			json_ctx j;
-			json_init(&j, buf);
-			// The desc file is a JSON object: {"name":"...","version":"...",...}
-			// We need to parse it similar to load_json_file but for a single object
-			if (json_next(&j) == '{') {
-				pkg_internal *p = pkg_new("");
-				while (json_peek(&j) == '"') {
-					char *k = json_string(&j);
-					if (!k) break;
-					json_next(&j);
-					char *v = json_value(&j);
-					if (strcmp(k, "name") == 0) { free(p->name); p->name = v; v = NULL; }
-					else if (strcmp(k, "version") == 0) { free(p->version); p->version = v; v = NULL; }
-					else if (strcmp(k, "description") == 0) { free(p->desc); p->desc = v; v = NULL; }
-					else if (strcmp(k, "architecture") == 0) { free(p->arch); p->arch = v; v = NULL; }
-					else if (strcmp(k, "depends") == 0) { free(p->depends); p->depends = v; v = NULL; }
-					else if (strcmp(k, "conflicts") == 0) { free(p->conflicts); p->conflicts = v; v = NULL; }
-					else if (strcmp(k, "provides") == 0) { free(p->provides); p->provides = v; v = NULL; }
-					else if (strcmp(k, "reason") == 0) p->reason = (v && strcmp(v, "explicit") == 0) ? ALPM_PKG_REASON_EXPLICIT : ALPM_PKG_REASON_DEPEND;
-					free(k); free(v);
-					if (json_peek(&j) == ',') json_next(&j);
+	FILE *f = fopen(path, "r");
+	if (!f) return NULL;
+	fseek(f, 0, SEEK_END);
+	long len = ftell(f);
+	rewind(f);
+	char *buf = malloc(len + 1);
+	if (!buf) { fclose(f); return NULL; }
+	int n = fread(buf, 1, len, f);
+	buf[n] = 0;
+	fclose(f);
+
+	char *p = buf;
+	while (p && *p) {
+		while (*p == '\n') p++;
+		if (!*p) break;
+		char *end = strstr(p, "\n\n");
+		if (end) *end = 0;
+
+		char name[256] = {0}, version[256] = {0}, arch[64] = {0}, desc[1024] = {0};
+		char depends[4096] = {0};
+		int is_installed = 0;
+
+		char *line = p;
+		while (line && *line) {
+			char *nl = strchr(line, '\n');
+			if (nl) *nl = 0;
+			if (strncmp(line, "Package: ", 9) == 0) strncpy(name, line + 9, sizeof(name) - 1);
+			else if (strncmp(line, "Version: ", 9) == 0) strncpy(version, line + 9, sizeof(version) - 1);
+			else if (strncmp(line, "Architecture: ", 14) == 0) strncpy(arch, line + 14, sizeof(arch) - 1);
+			else if (strncmp(line, "Status: ", 8) == 0 && strstr(line, "install ok installed")) is_installed = 1;
+			else if (strncmp(line, "Depends: ", 9) == 0) strncpy(depends, line + 9, sizeof(depends) - 1);
+			else if (strncmp(line, "Description: ", 13) == 0) {
+				strncpy(desc, line + 13, sizeof(desc) - 1);
+				if (nl) {
+					char *n = nl + 1;
+					while (n && (*n == ' ' || *n == '\t')) {
+						char *nnl = strchr(n, '\n');
+						if (nnl) *nnl = 0;
+						strncat(desc, " ", sizeof(desc) - strlen(desc) - 1);
+						strncat(desc, n, sizeof(desc) - strlen(desc) - 1);
+						n = nnl ? nnl + 1 : NULL;
+					}
 				}
-				if (p->name && *p->name) pkgs = alpm_list_add(pkgs, p);
-				else pkg_free(p);
 			}
-			free(buf);
+			line = nl ? nl + 1 : NULL;
 		}
-		fclose(f);
+
+		if (is_installed && name[0]) {
+			pkg_internal *pkg = pkg_new(name);
+			pkg->version = strdup(version);
+			pkg->arch = strdup(arch[0] ? arch : "arm64");
+			pkg->desc = strdup(desc[0] ? desc : "");
+			pkg->depends = strdup(depends);
+			pkg->reason = ALPM_PKG_REASON_EXPLICIT;
+			pkgs = alpm_list_add(pkgs, pkg);
+		}
+		p = end ? end + 2 : NULL;
 	}
-	closedir(dir);
+	free(buf);
 	return pkgs;
 }
 
+/* Load all packages from local DB directory (each subdir has a desc file) */
+static alpm_list_t *load_localdb_dir(const char *dirpath) {
+	alpm_list_t *pkgs = NULL;
+	DIR *d = opendir(dirpath);
+	if (!d) return NULL;
+	struct dirent *entry;
+	while ((entry = readdir(d)) != NULL) {
+		if (entry->d_name[0] == '.') continue;
+		if (strcmp(entry->d_name, "by-name") == 0) continue;
+		char path[4096];
+		snprintf(path, sizeof(path), "%s/%s/desc", dirpath, entry->d_name);
+		int fd = open(path, O_RDONLY);
+		if (fd < 0) continue;
+		struct stat st;
+		if (fstat(fd, &st) < 0 || st.st_size == 0) { close(fd); continue; }
+		char *buf = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+		close(fd);
+		if (buf == MAP_FAILED) continue;
+		json_ctx j;
+		json_init(&j, buf);
+		if (json_next(&j) != '{') { munmap(buf, st.st_size); continue; }
+		pkg_internal *p = json_to_pkg(&j);
+		if (p->name && *(p->name)) {
+			p->origin = ALPM_PKG_FROM_LOCALDB;
+			pkgs = alpm_list_add(pkgs, p);
+		} else {
+			pkg_free(p);
+		}
+		munmap(buf, st.st_size);
+	}
+	closedir(d);
+	return pkgs;
+}
+
+/* Load local database: our packages + dpkg status */
 static int load_local_db(alpm_db_t *db) {
 	if (db->pkgs) return 0;
 	char path[4096];
 	snprintf(path, sizeof(path), "%s/local", DB_DIR);
 	db->pkgs = load_localdb_dir(path);
-	return 0;
+
+	// Also load dpkg status for system packages
+	char dpkg_path[4096];
+	snprintf(dpkg_path, sizeof(dpkg_path), "%s", DPKG_STATUS);
+	alpm_list_t *dpkg_pkgs = load_dpkg_status(dpkg_path);
+	if (dpkg_pkgs) {
+		if (db->pkgs) {
+			alpm_list_t *last = alpm_list_last(db->pkgs);
+			last->next = dpkg_pkgs;
+			dpkg_pkgs->prev = last;
+		} else {
+			db->pkgs = dpkg_pkgs;
+		}
+	}
+		return 0;
 }
 
 /* Load sync database from JSONL chunks */

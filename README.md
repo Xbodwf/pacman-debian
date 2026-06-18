@@ -1,33 +1,40 @@
 # pacman-debian
 
-A package manager that adopts the Arch Linux pacman command-line syntax while operating directly on Debian/Ubuntu `.deb` packages. It manages packages at the dpkg level — bypassing APT — and also supports native Arch Linux `.pkg.tar.zst` packages.
+A package manager that adopts the Arch Linux pacman command-line syntax while
+operating directly on Debian/Ubuntu `.deb` packages. It manages packages at the
+dpkg level — bypassing APT — and also supports native Arch Linux `.pkg.tar.zst`
+packages (including AUR compatibility via yay with a bundled libalpm).
 
 ## Goals
 
-- Provide a consistent, pacman-style CLI for package management on Debian-based systems.
-- Eliminate the conceptual overhead of switching between `apt`, `dpkg`, and their various frontends.
-- Support multi-repository setups combining Debian/Ubuntu and Arch Linux repositories under a single tool.
-- Maintain full compatibility with dpkg's database (`/var/lib/dpkg/status`), allowing coexistence with APT and other dpkg frontends.
-
-## Non-Goals
-
-- Replace APT or dpkg as the system package manager.
-- Implement AUR support or any Arch Linux-specific build system integration.
-- Provide a full dependency resolver comparable to APT's advanced solver.
+- Provide a consistent, pacman-style CLI for package management on Debian-based
+  systems, eliminating the conceptual overhead of switching between `apt`,
+  `dpkg`, and their various frontends.
+- Support multi-repository setups combining Debian/Ubuntu and Arch Linux
+  repositories under a single tool.
+- Maintain full compatibility with dpkg's database (`/var/lib/dpkg/status`),
+  allowing coexistence with APT and other dpkg frontends.
+- Provide a libalpm ABI-compatible shared library so that Go-based AUR helpers
+  (yay) can work on Debian without modification.
 
 ## Requirements
 
 - Node.js 18+ (TypeScript, compiled with `tsc`)
-- Debian 12 Bookworm (or compatible Debian-based distribution)
+- pnpm package manager
+- Debian 12 Bookworm (or compatible Debian-based distribution) on aarch64/arm64
 - Root privileges for install, remove, and upgrade operations
+- Build essentials: `gcc`, `make`, `ldconfig`
 
 ## Quick Start
 
 ```bash
-# Build
+# Build TypeScript + C library
 pnpm install && pnpm build
 
-# Install as system command
+# Run interactive setup (creates config, symlinks, dpkg entry)
+sudo node dist/scripts/setup.js
+
+# Alternatively, set up manually:
 sudo ln -sf "$PWD/dist/cli/pacman.js" /usr/local/bin/pacman
 
 # Sync repositories
@@ -50,33 +57,108 @@ sudo pacman -R neofetch
 
 Configuration file: `/etc/pacman-debian/pacman.conf`
 
-If the file does not exist, the default configuration uses Ubuntu Noble (24.04) ARM64 repositories from `ports.ubuntu.com`. Example configuration:
+The configuration uses pure Arch Linux pacman syntax with `Include` directives.
+Repo-specific keys (`Type`, `Dist`, `Components` for Debian repos) go in
+included files under `/etc/pacman.d/`.
+
+Example config:
 
 ```ini
 [options]
 Architecture = arm64
 
-[ubuntu]
-Type = debian
-Server = http://ports.ubuntu.com/ubuntu-ports
-Dist = noble
-Components = main universe
+[bookworm]
+Include = /etc/pacman.d/debian-bookworm
 
-[arch]
-Type = arch
-Server = https://mirror.example.com/archlinux
+[extra]
+Include = /etc/pacman.d/arch-extra
 ```
 
-## Repository Support
+Include file example (`/etc/pacman.d/debian-bookworm`):
 
-- **Debian/Ubuntu**: Reads `Packages.gz` / `Packages.xz` from standard repository indices.
-- **Arch Linux**: Reads `db.tar.gz` from Arch-compatible repositories. Downloaded `.pkg.tar.zst` files are extracted using `zstd` and installed directly.
+```
+Server = https://mirrors.tuna.tsinghua.edu.cn/debian
+Type = debian
+Dist = bookworm
+Components = main contrib non-free non-free-firmware
+```
+
+Include file for Arch repos (`/etc/pacman.d/arch-extra`):
+
+```
+Server = http://mirror.archlinuxarm.org/$arch/$repo
+Type = arch
+Architecture = aarch64
+```
+
+A symlink at `/etc/pacman.conf` → `/etc/pacman-debian/pacman.conf` is created
+during setup for compatibility with tools that hardcode this path (e.g., yay).
 
 ## Database
 
-- Own database: `/var/lib/pacman-debian/status.json`
-- dpkg compatibility: writes entries to `/var/lib/dpkg/status` for interoperability with APT and `dpkg` commands.
-- Installed package files index: `/var/lib/pacman-debian/file-index.json` (used by `-Qo`).
+### Local database: `/var/lib/pacman-debian/local/`
+
+Uses a directory-per-package format matching Arch Linux's local DB:
+
+```
+/var/lib/pacman-debian/local/
+├── by-name/
+│   ├── fastfetch -> ../fastfetch-2.64.2-2/
+│   └── ...
+├── fastfetch-2.64.2-2/
+│   ├── desc          # JSON metadata (name, version, deps, size, etc.)
+│   └── files         # File manifest
+└── ...
+```
+
+### dpkg compatibility
+
+Packages installed via `dpkg` or `apt` are read directly from
+`/var/lib/dpkg/status` at query time (mtime-cached). When `pacman-debian`
+installs a package, it writes a dpkg-compatible entry ensuring `apt` and `dpkg`
+still see the package.
+
+### Repository cache: `/var/cache/pacman-debian/packages/`
+
+Each repository is cached in JSON Lines chunks (5000 packages per `.jsonl`
+file) for O(1) single-package lookup via line scan, avoiding filesystem
+pressure on large repos. Full parse of the 15MB cache is only done when
+listing all packages (`-Sl`, `-Su`, etc.).
+
+## Repository Support
+
+- **Debian/Ubuntu**: Reads `Packages.gz` / `Packages.xz` from standard
+  repository indices. Supports `$repo`/`$arch` variable substitution in
+  `Server` URLs.
+- **Arch Linux**: Reads `db.tar.gz` from Arch-compatible repositories.
+  Downloaded `.pkg.tar.zst` files are extracted and installed.
+- **Arch ARM**: Binary packages require glibc 2.38+ — Debian 12 ships glibc
+  2.36, so Arch ARM binary repos are **unusable** on Bookworm without a glibc
+  upgrade (which will break the system). Use `makepkg` for local builds instead.
+
+## libalpm (libpac4deb)
+
+A C library at `lib/pac4deb/` that implements the libalpm ABI (`alpm.h`),
+allowing Go-based AUR helpers like `yay` to work on Debian without
+modification. It reads:
+
+- Local database (`/var/lib/pacman-debian/local/`) — packages installed by
+  pacman-debian
+- dpkg status (`/var/lib/dpkg/status`) — system packages from apt/dpkg
+- Sync databases (`/var/cache/pacman-debian/packages/*/` — JSONL chunks)
+
+Over 200 stubs are provided for rarely-used functions.
+
+## makepkg
+
+A minimal `makepkg` implementation in `src/makepkg/` that can build packages
+from PKGBUILDs:
+
+- Parses PKGBUILD via bash sourcing
+- Downloads and extracts sources
+- Runs `build()` and `package()` functions
+- Creates `.pkg.tar.zst` archives with `.PKGINFO` metadata
+- Supports `--syncdeps` for dependency resolution
 
 ## Commands
 
@@ -85,7 +167,7 @@ Server = https://mirror.example.com/archlinux
 | Command | Description |
 |---------|-------------|
 | `pacman -S <pkg>` | Install package(s) from repositories |
-| `pacman -Sy` | Refresh package databases |
+| `pacman -Sy` | Refresh package databases (mtime check, 24h) |
 | `pacman -Syy` | Force refresh package databases |
 | `pacman -Su` | Upgrade all installed packages |
 | `pacman -Syu` | Refresh databases and upgrade |
@@ -94,7 +176,7 @@ Server = https://mirror.example.com/archlinux
 | `pacman -Sl` | List all packages in repositories |
 | `pacman -Sw <pkg>` | Download packages without installing |
 | `pacman -Sc` | Remove unused cached packages |
-| `pacman -Scc` | Remove all cached packages |
+| `pacman -Scc` | Remove all cached packages (including repos) |
 | `pacman -Sp <pkg>` | Print what would be installed (dry-run) |
 
 ### Remove (-R)
@@ -126,7 +208,7 @@ Server = https://mirror.example.com/archlinux
 
 | Command | Description |
 |---------|-------------|
-| `pacman -U <file>` | Install a local package file |
+| `pacman -U <file>` | Install a local package file (.deb/.pkg.tar.zst) |
 | `pacman -D --asdeps <pkg>` | Mark package as dependency |
 | `pacman -D --asexplicit <pkg>` | Mark package as explicitly installed |
 | `pacman -T <pkg>` | Check if dependencies are satisfied |
@@ -143,17 +225,114 @@ Server = https://mirror.example.com/archlinux
 | `--noscriptlet` | Do not execute install scripts |
 | `--print` | Dry-run: show what would be done without executing |
 
+## Dependency Engine
+
+The dependency resolver (`src/core/deps.ts`) handles:
+
+- Package name parsing with version constraints (`>=`, `<=`, `=`)
+- OR dependencies (`|`)
+- Architecture qualifiers (`:arm64`)
+- Both Debian (comma-separated) and Arch (space-separated) formats
+- BFS resolution with pre-loaded DB state
+- Conflict detection across installed and to-be-installed packages
+- System package protection (glibc, libc6, etc.)
+
+Version comparison delegates to `dpkg --compare-versions` with numeric/string
+fallback.
+
 ## Architecture
 
 ```
 src/
 ├── cli/pacman.ts       # CLI argument parsing and dispatch
-├── core/               # Package format parsers (ar, tar, control, deb, Arch .PKGINFO)
-├── db/                 # Local database (status.json, file-index.json) and dpkg compatibility
-├── ops/                # Operations: install, remove, query, upgrade
-├── repo/               # Repository sync (Debian Packages.gz, Arch db.tar.gz) and configuration
-└── ui/                 # User interface (prompt, formatting)
+├── core/               # Package format parsers, dependency engine
+│   ├── ar.ts           # ar archive parser
+│   ├── tar.ts          # tar extractor
+│   ├── deb.ts          # .deb package parser
+│   ├── pkgfile.ts      # .pkg.tar.zst parser
+│   ├── compress.ts     # gz/xz decompression
+│   ├── control.ts      # debian control file parser
+│   └── deps.ts         # Dependency resolution engine
+├── db/
+│   ├── localdb.ts      # Directory-based local package DB
+│   ├── database.ts     # DB wrapper with transactions
+│   └── dpkg-compat.ts  # dpkg status file read/write
+├── ops/
+│   ├── install.ts      # Package installation
+│   ├── remove.ts       # Package removal
+│   ├── query.ts        # All -Q queries
+│   └── upgrade.ts      # Sync + upgrade flow
+├── repo/
+│   ├── repository.ts   # Repo sync, download, JSONL cache
+│   └── config.ts       # pacman.conf parser with Include support
+├── scripts/
+│   └── setup.ts        # Interactive setup script
+├── makepkg/
+│   ├── index.ts        # Main makepkg entry
+│   ├── pkgbuild.ts     # PKGBUILD parser
+│   ├── source.ts       # Source download/extraction
+│   ├── build.ts        # build()/package() execution
+│   └── printsrcinfo.ts # .SRCINFO generation
+├── ui/                 # User interface (prompt, formatting)
+└── index.ts            # Entry point
 ```
+
+## libalpm C Library
+
+```
+lib/pac4deb/
+├── Makefile            # Build with gcc, target libalpm.so
+├── include/
+│   ├── alpm.h          # Public libalpm API header
+│   └── alpm_list.h     # Linked list header
+└── src/
+    ├── libalpm.c       # Core implementation (handle, db, pkg, JSON parser)
+    ├── stubs_manual.c  # ~200 stubs for rarely-used libalpm functions
+    └── alpm_list.c     # Linked list implementation
+```
+
+Build with: `make -C lib/pac4deb`
+Install with: `sudo make -C lib/pac4deb install`
+
+## yay / AUR Support
+
+`yay` works with `pacman-debian` through the bundled libalpm:
+
+```bash
+# Install yay (Go required)
+sudo apt install golang-go
+git clone https://aur.archlinux.org/yay.git /tmp/yay
+cd /tmp/yay && go build -o /usr/local/bin/yay
+
+# Use with pacman-debian
+PACMAN=/usr/local/bin/pacman yay -Ss ponysay
+PACMAN=/usr/local/bin/pacman sudo -E yay -S ponysay
+```
+
+Note: AUR packages that depend on `python` (not `python3`) are unresolvable
+on Debian 12 since the package is named `python3`. Install `python-is-python3`
+or create a symlink to work around this.
+
+## Build
+
+```bash
+pnpm install
+pnpm build                # tsc + C library
+# Or step by step:
+pnpm exec tsc
+make -C lib/pac4deb       # Build libalpm.so
+```
+
+## Project Status
+
+This project was renamed to `pacman-debian` at v7.1.0. It is functional for
+day-to-day package management on aarch64 Debian 12. Key limitations:
+
+- **Arch ARM binary repos require glibc 2.38+** — Debian 12 ships 2.36.
+  Local `makepkg` builds work fine.
+- **yay dependency resolution** works for packages in sync DBs but may fail
+  on complex AUR dependency chains.
+- **No AUR helper integration** beyond yay (paru, pamac, etc. untested).
 
 ## License
 

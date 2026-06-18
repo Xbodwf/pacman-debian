@@ -2,6 +2,7 @@
 #include "../include/alpm.h"
 #include "../include/alpm_list.h"
 #include <stdlib.h>
+#include <string.h>
 
 /* Option setters/getters not implemented */
 int alpm_option_set_usesyslog(alpm_handle_t *h, int v) { (void)h; (void)v; return 0; }
