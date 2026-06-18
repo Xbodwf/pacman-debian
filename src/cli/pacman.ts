@@ -7,11 +7,12 @@ import { initDb, loadDatabase, saveDatabase, getPackage } from '../db/database';
 import { readDpkgStatus } from '../db/dpkg-compat';
 import { setNoConfirm } from '../ui/prompt';
 import * as fs from 'node:fs';
+import pkg from '../../package.json';
 import type { InstallOptions } from '../core/options';
 
 const CACHE = '/var/cache/pacman-debian/pkg';
 const PCACHE = '/var/cache/pacman-debian/packages';
-const VERSION = '1.0.0';
+const VERSION = pkg.version;
 
 function help(): void {
   console.log(`usage:  pacman <operation>[...]
