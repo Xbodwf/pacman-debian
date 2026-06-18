@@ -59,6 +59,8 @@ async function main() {
       const isDebian = fs.existsSync('/etc/debian_version');
       const content = [
         `# pacman-debian configuration file`,
+        `#`,
+        `# See /etc/pacman.d/ for mirrorlist examples`,
         ``,
         `[options]`,
         `Architecture = ${arch}`,
@@ -67,27 +69,45 @@ async function main() {
 
       if (isDebian) {
         content.push(
-          `# ... add Debian/Ubuntu repos here ...`,
-          `#`,
-          `# [bookworm]`,
-          `# Type = debian`,
-          `# Server = https://mirrors.tuna.tsinghua.edu.cn/debian`,
-          `# Dist = bookworm`,
-          `# Components = main contrib non-free non-free-firmware`,
-          ``,
-          `# [core]`,
-          `# Type = arch`,
-          `# Server = http://mirror.archlinuxarm.org/$arch/$repo`,
-          `# Architecture = aarch64`,
-        );
-      } else {
-        content.push(
-          `# [core]`,
-          `# Include = /etc/pacman.d/mirrorlist`,
+          `# Include = /etc/pacman.d/debian-bookworm`,
+          `# Include = /etc/pacman.d/debian-updates`,
+          `# Include = /etc/pacman.d/debian-security`,
         );
       }
 
-      content.push('');
+      content.push(
+        `# Include = /etc/pacman.d/mirrorlist`,
+        '',
+      );
+
+      // Create example include file
+      const includeDir = '/etc/pacman.d';
+      if (!fs.existsSync(includeDir)) fs.mkdirSync(includeDir, { recursive: true });
+
+      const exampleDebian = path.join(includeDir, 'debian-bookworm');
+      if (!fs.existsSync(exampleDebian)) {
+        fs.writeFileSync(exampleDebian, [
+          `# Debian Bookworm mirror (清华镜像)`,
+          `Server = https://mirrors.tuna.tsinghua.edu.cn/debian`,
+          `Type = debian`,
+          `Dist = bookworm`,
+          `Components = main contrib non-free non-free-firmware`,
+          ``,
+        ].join('\n'));
+        console.log(`  Created: ${exampleDebian}`);
+      }
+
+      const exampleArch = path.join(includeDir, 'arch-core');
+      if (!fs.existsSync(exampleArch)) {
+        fs.writeFileSync(exampleArch, [
+          `# Arch Linux ARM core mirror`,
+          `Server = http://mirror.archlinuxarm.org/$arch/$repo`,
+          `Type = arch`,
+          `Architecture = aarch64`,
+          ``,
+        ].join('\n'));
+        console.log(`  Created: ${exampleArch}`);
+      }
       fs.writeFileSync(CONFIG_PATH, content.join('\n'));
       console.log(`  Created: ${CONFIG_PATH}`);
     }
