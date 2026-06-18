@@ -114,10 +114,9 @@ export async function parseArgs(args: string[]): Promise<void> {
     return;
   }
   if (raw === '--upgrade') {
-    const asdeps = rest.includes('--asdeps');
     const targets = rest.filter(a => !a.startsWith('-'));
     if (targets.length === 0) { console.error('error: no targets'); return; }
-    await installPackages(targets, { ...opts, asdeps });
+    for (const t of targets) await installPkg(t, opts);
     return;
   }
   if (raw === '--remove') {
@@ -209,7 +208,15 @@ export async function parseArgs(args: string[]): Promise<void> {
     }
     if (doUpgrade) { await upgradeOnly(opts); return; }
 
-    // Install
+    // -U: install local file
+    if (op === 'U') {
+      const targets = rest.filter(a => !a.startsWith('-'));
+      if (targets.length === 0) { console.error('error: no targets'); return; }
+      for (const t of targets) await installPkg(t, opts);
+      return;
+    }
+
+    // -S: install from repos
     const asdeps = rest.includes('--asdeps');
     const targets = rest.filter(a => !a.startsWith('-'));
     if (targets.length === 0) { console.error('error: no targets'); return; }
